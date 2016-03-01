@@ -19,18 +19,18 @@ typedef struct {
 // Create and Define worker input struct
 // that is needed for thread worker function below
 typedef struct {
-	
+    dyn_array_t* ready_queue;
+    ScheduleResult_t* result;
 } WorkerInput_t;
 
-
 // Runs the First Come First Serve Process Scheduling over the incoming ready_queue
-// \param ready queue a dyn_array of type ProcessControlBlock_t that contain be up to N elements 
+// \param ready queue a dyn_array of type ProcessControlBlock_t that contain be up to N elements
 // \param result used for first come first serve stat tracking \ref ScheduleResult_t
 // \return true if function ran successful else false for an error
 bool first_come_first_serve(dyn_array_t* ready_queue, ScheduleResult_t* result);
 
 // Runs the Round Robin Process Scheduling over the incoming ready_queue
-// \param ready queue a dyn_array of type ProcessControlBlock_t that contain be up to N elements 
+// \param ready queue a dyn_array of type ProcessControlBlock_t that contain be up to N elements
 // \param result used for first come first serve stat tracking \ref ScheduleResult_t
 // \return true if function ran successful else false for an error
 bool round_robin(dyn_array_t* ready_queue, ScheduleResult_t* result);
@@ -42,13 +42,13 @@ bool round_robin(dyn_array_t* ready_queue, ScheduleResult_t* result);
 dyn_array_t* load_process_control_blocks (const char* input_file );
 
 // The function that will be threaded for running first_come_first_serve in parallel
-// \param input is a user defined structure that contains a pointer reference to the 
+// \param input is a user defined structure that contains a pointer reference to the
 //		shared dyn_array of ProcessControlBlock_t and a pointer to a non shared ScheduleResult_t struct
 // \return nothing
 void* first_come_first_serve_worker (void* input);
 
 // The function that will be threaded for running round_robin in parallel
-// \param input is a user defined structure that contains a pointer reference to the 
+// \param input is a user defined structure that contains a pointer reference to the
 //		shared dyn_array of ProcessControlBlock_t and a pointer to a non shared ScheduleResult_t struct
 // \return nothing
 void* round_robin_worker (void* input);
