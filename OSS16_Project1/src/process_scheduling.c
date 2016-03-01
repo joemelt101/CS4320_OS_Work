@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <dyn_array.h>
+#include <stdio.h>
 #include "../include/processing_scheduling.h"
 
 #define QUANTUM 4 // Used for Robin Round for process as the run time limit
@@ -14,6 +15,7 @@ pthread_mutex_t mutex;
 // private function
 void virtual_cpu(ProcessControlBlock_t* process_control_block) {
 	// decrement the burst time of the pcb
+	sleep(1);
 	--process_control_block->remaining_burst_time;
 }
 

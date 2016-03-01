@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
 
     //create threads
     int i;
-    for (i = 0; i < numFCFS; ++i) {
+    for (i = 0; i < totalThreads; ++i) {
         //load same dynamic array for every worker
         workerInputs[i].ready_queue = da;
 
@@ -119,8 +119,7 @@ int main(int argc, char** argv) {
     }
 
     //wait for completed threads
-    for (i = 0; i < totalThreads; ++i)
-    {
+    for (i = 0; i < totalThreads; ++i) {
         pthread_join(threads[i], NULL);
     }
 
