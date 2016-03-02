@@ -8,8 +8,8 @@ include_directories(${GTEST_INCLUDE_DIRS})
 set(CMAKE_CXX_FLAGS "-std=c++0x -Wall -Wextra -Wshadow -Werror -g")
 
 #find_library(src/process_scheduling.c)
-add_executable(main src/analysis.c src/process_scheduling.c)
-target_link_libraries(main ${dyn_array_lib} pthread)
+add_executable(process_analysis src/analysis.c src/process_scheduling.c)
+target_link_libraries(process_analysis ${dyn_array_lib} pthread)
 
 # Link runTests with what we want to test and the GTest and pthread library
 add_executable(project_test test/tests.cpp)
