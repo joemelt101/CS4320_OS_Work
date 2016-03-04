@@ -56,8 +56,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    int numRR = totalThreads - numFCFS;
-
     //prep mutex
     init_lock();
 
