@@ -32,7 +32,7 @@ back_store_t *back_store_create(const char *const fname) {
         return NULL;
     }
 
-    int file = open(fname, O_RDWR | O_CREAT | O_SYNC, 0666);
+    int file = open(fname, O_RDWR | O_CREAT | O_SYNC | O_TRUNC, 0666);
 
     if (file == -1) {
         //failed to open file...
@@ -45,7 +45,9 @@ back_store_t *back_store_create(const char *const fname) {
     ptr->bitmap = bitmap_create(NUM_BLOCKS);
 
     //set all of the bitmap to 1
-    bitmap_total_set(ptr->bitmap);
+    for (int i = 0; i < NUM_BLOCKS; ++i) {
+        bitmap_set(ptr->bitmap, i);
+    }
 
     //signal the first 8 blocks as used (first 8 blocks store the bitmap)
     for (size_t i = 0; i < 8; ++i) {
@@ -57,19 +59,6 @@ back_store_t *back_store_create(const char *const fname) {
     uint8_t *data = (uint8_t *) bitmap_export(ptr->bitmap);
     int numBytes = bitmap_get_bytes(ptr->bitmap);
     write(file, data, numBytes); //write the data to the beginning of the file
-
-    //now write zeroed out data to the rest of the file
-    /*
-    uint8_t *zeros = calloc(1024, sizeof(uint8_t));
-    lseek(file, 0, SEEK_END);
-
-    for (uint64_t i = 0; i < NUM_BLOCKS; ++i) {
-        write(file, zeros, 128);
-    }
-
-    free(zeros); //free up memory
-    */
-
     ptr->loc = file;
 
     return ptr;
@@ -123,8 +112,6 @@ void back_store_close(back_store_t *const bs) {
 
     //free memory
     free(bs);
-
-    return;
 }
 
 ///
@@ -139,10 +126,14 @@ unsigned back_store_allocate(back_store_t *const bs) {
 
     size_t loc = bitmap_ffs(bs->bitmap); //find the first free location
 
-    //allocate memory there
+    if (loc == SIZE_MAX) {
+        return 0; //couldn't find an open location
+    }
+
+    //else, allocate memory there
     back_store_request(bs, loc);
 
-    return 1;
+    return loc;
 }
 
 ///
@@ -152,15 +143,30 @@ unsigned back_store_allocate(back_store_t *const bs) {
 /// \return bool indicating allocation success
 ///
 bool back_store_request(back_store_t *const bs, const unsigned block_id) {
+    //validate proper allocation
     if (! bs) {
         return false;
     }
 
+    //check limits of block_id
+    if (block_id < 8 || block_id > NUM_BLOCKS) {
+        return false;
+    }
+
+    if (bitmap_test(bs->bitmap, block_id) == 0) {
+        //already allocated, so don't reallocate
+        return false;
+    }
+
+    //else, not allocated, so good to go!
     uint8_t blockData[BLOCK_SIZE] = { 0 };
 
     //initialize block
     lseek(bs->loc, FIRST_BLOCK + (BLOCK_SIZE * block_id), SEEK_SET);
     write(bs->loc, blockData, BLOCK_SIZE);
+
+    //set memory map to note that the memory is in use
+    bitmap_reset(bs->bitmap, block_id);
 
     return true;
 }
@@ -190,6 +196,16 @@ bool back_store_read(back_store_t *const bs, const unsigned block_id, void *cons
         return false;
     }
 
+    if (block_id < 8 || block_id >= NUM_BLOCKS) {
+        //trying to access protected memory
+        return false;
+    }
+
+    if (bitmap_test(bs->bitmap, block_id) == true) {
+        //the location is not yet set
+        return false;
+    }
+
     //move to correct pointer location
     lseek(bs->loc, FIRST_BLOCK + (BLOCK_SIZE * block_id), SEEK_SET);
 
@@ -208,6 +224,11 @@ bool back_store_read(back_store_t *const bs, const unsigned block_id, void *cons
 ///
 bool back_store_write(back_store_t *const bs, const unsigned block_id, const void *const src) {
     if (! bs || ! src) {
+        return false;
+    }
+
+    if (block_id < 8 || block_id >= NUM_BLOCKS) {
+        //trying to access protected memory
         return false;
     }
 
