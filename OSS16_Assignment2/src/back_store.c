@@ -110,6 +110,9 @@ void back_store_close(back_store_t *const bs) {
     //close file handle
     close(bs->loc);
 
+    //destroy the bitmap in memory
+    bitmap_destroy(bs->bitmap);
+
     //free memory
     free(bs);
 }
