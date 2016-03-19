@@ -172,10 +172,16 @@ page_request_result_t* approx_least_recently_used (const uint16_t page_number, c
         int victimPage = ps.frame_table.entries[minAccessIndex].page_table_idx;
 
         //put victim data in backing store
-        write_to_back_store(ps.frame_table.entries[minAccessIndex].data, victimPage);
+        if (! write_to_back_store(ps.frame_table.entries[minAccessIndex].data, victimPage)) {
+            printf("Failed to write to backing store.\n");
+            return NULL;
+        }
 
         //grab new data from backing store and place in victim frame
-        read_from_back_store(ps.frame_table.entries[minAccessIndex].data, page_number);
+        if (! read_from_back_store(ps.frame_table.entries[minAccessIndex].data, page_number)) {
+            printf("Failed to read from backing store.\n");
+            return NULL;
+        }
 
         //update victim frame page number
         ps.frame_table.entries[minAccessIndex].page_table_idx = page_number;
@@ -188,6 +194,12 @@ page_request_result_t* approx_least_recently_used (const uint16_t page_number, c
 
         //return results object
         page_req_result = (page_request_result_t *) malloc(sizeof(page_request_result_t));
+
+        if (! page_req_result) {
+            printf("Failed to allocate memory.\n");
+            return NULL;
+        }
+
         page_req_result->page_requested = page_number;
         page_req_result->frame_replaced = minAccessIndex;
         page_req_result->page_replaced = victimPage;
@@ -225,7 +237,7 @@ page_request_result_t* approx_least_recently_used (const uint16_t page_number, c
 * HELPER FUNCTION
 * Gets the number of bits in a provided byte and returns it
 * */
-int get_num_bits(int byte) {
+static int get_num_bits(int byte) {
     int i = 0;
     int numBits = 0;
 
@@ -284,10 +296,16 @@ page_request_result_t* least_frequently_used (const uint16_t page_number, const 
         int victimPage = ps.frame_table.entries[minAccessIndex].page_table_idx;
 
         //put victim data in backing store
-        write_to_back_store(ps.frame_table.entries[minAccessIndex].data, victimPage);
+        if (! write_to_back_store(ps.frame_table.entries[minAccessIndex].data, victimPage)) {
+            printf("Failed to write to backing store.\n");
+            return NULL;
+        }
 
         //grab new data from backing store and place in victim frame
-        read_from_back_store(ps.frame_table.entries[minAccessIndex].data, page_number);
+        if (! read_from_back_store(ps.frame_table.entries[minAccessIndex].data, page_number)) {
+            printf("Failed to read from backing store.\n");
+            return NULL;
+        }
 
         //update victim frame page number
         ps.frame_table.entries[minAccessIndex].page_table_idx = page_number;
@@ -300,6 +318,12 @@ page_request_result_t* least_frequently_used (const uint16_t page_number, const 
 
         //return results object
         page_req_result = (page_request_result_t *) malloc(sizeof(page_request_result_t));
+
+        if (! page_req_result) {
+            printf("Failed to allocate memory.\n");
+            return NULL;
+        }
+
         page_req_result->page_requested = page_number;
         page_req_result->frame_replaced = minAccessIndex;
         page_req_result->page_replaced = victimPage;
@@ -340,7 +364,7 @@ page_request_result_t* least_frequently_used (const uint16_t page_number, const 
 bool read_from_back_store (void *data, const unsigned int page) {
 
 	//validate inputs
-	if (page >= MAX_PAGE_TABLE_ENTRIES_SIZE || !data) {
+	if (page >= MAX_PAGE_TABLE_ENTRIES_SIZE || ! data) {
         return false;
 	}
 
@@ -356,7 +380,7 @@ bool read_from_back_store (void *data, const unsigned int page) {
 bool write_to_back_store (const void *data, const unsigned int page) {
 
 	//validate inputs
-	if (page >= MAX_PAGE_TABLE_ENTRIES_SIZE || !data) {
+	if (page >= MAX_PAGE_TABLE_ENTRIES_SIZE || ! data) {
         return false;
 	}
 
