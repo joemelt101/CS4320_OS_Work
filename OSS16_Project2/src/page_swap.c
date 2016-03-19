@@ -225,17 +225,21 @@ page_request_result_t* approx_least_recently_used (const uint16_t page_number, c
 * HELPER FUNCTION
 * Gets the number of bits in a provided byte and returns it
 * */
-int8_t get_num_bits(int8_t byte) {
-    int8_t i = 0;
-    int8_t numBits = 0;
+int get_num_bits(int byte) {
+    int i = 0;
+    int numBits = 0;
 
     //iterate 8 times
     for (i = 0; i < 8; ++i) {
-        if ((float)byte >> 1 != (float)byte / 2) {
+        if ((float)(byte >> 1) != (float)byte / 2) {
             //pulled out a 1
             numBits++;
         }
+
+        byte >>= 1;
     }
+
+    return numBits;
 }
 
 
@@ -264,9 +268,9 @@ page_request_result_t* least_frequently_used (const uint16_t page_number, const 
         int16_t minAccessIndex = 0;
 
         for (int i = 0; i < MAX_PHYSICAL_MEMORY_SIZE; ++i) {
-            if (ps.frame_table.entries[i].access_tracking_byte < minAccessValue) {
+            if (get_num_bits(ps.frame_table.entries[i].access_tracking_byte) < minAccessValue) {
                 //found a smaller value, so make note of it
-                minAccessValue = ps.frame_table.entries[i].access_tracking_byte;
+                minAccessValue = get_num_bits(ps.frame_table.entries[i].access_tracking_byte);
                 minAccessIndex = i;
 
                 //if at minimum possible value then break
