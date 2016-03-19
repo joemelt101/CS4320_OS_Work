@@ -45,7 +45,7 @@ typedef struct {
 
 
 /*
- * Manages the array of pages 
+ * Manages the array of pages
  * */
 typedef struct {
 	page_t entries[MAX_PAGE_TABLE_ENTRIES_SIZE]; // creates an page array
@@ -66,7 +66,7 @@ back_store_t* bs;
 
 // A Global variable that is used in the following page
 // swap algorithms
-static page_swap_t ps; 
+static page_swap_t ps;
 
 
 // function to populate and fill your frame table and page tables
@@ -76,7 +76,7 @@ bool initialize (void) {
 	// needs work to create back_store properly
 	back_store_t* bs = back_store_create("PAGE_SWAP");
 	ps.bs = bs;
-	
+
 	unsigned char buffer[1024] = {0};
 	// requests the blocks needed
 	for (int i = 0; i < MAX_PAGE_TABLE_ENTRIES_SIZE; ++i) {
@@ -120,10 +120,11 @@ bool initialize (void) {
 		// update page table with frame table index
 		page->frame_table_idx = i;
 		page->valid = 1;
-		
+
 	}
 	return true;
 }
+
 // keep this do not delete
 void destroy(void) {
 	back_store_close(ps.bs);
@@ -133,9 +134,108 @@ void destroy(void) {
  * ALRU IMPLEMENTATION : TODO IMPLEMENT
  * */
 
-page_request_result_t* approx_least_recently_used (const uint16_t page_number, const size_t clock_time) {		
+page_request_result_t* approx_least_recently_used (const uint16_t page_number, const size_t clock_time) {
+    if (page_number >= MAX_PAGE_TABLE_ENTRIES_SIZE) {
+        return NULL;
+    }
+
+    //the result to return
+    //init to NULL until the page is validated or invalidated
 	page_request_result_t* page_req_result = NULL;
+
+    //check if page number is valid
+    bool valid = ps.page_table.entries[page_number].valid;
+
+    //if not valid
+    if (! valid) {
+        ////////////////////////////////////////////
+        //Page is invalid, so find victim, swap data and update tables
+
+        //find a victim frame
+        int8_t minAccessValue = 0;
+        int16_t minAccessIndex = 0;
+
+        for (int i = 0; i < MAX_PHYSICAL_MEMORY_SIZE; ++i) {
+            if (ps.frame_table.entries[i].access_tracking_byte < minAccessValue) {
+                //found a smaller value, so make note of it
+                minAccessValue = ps.frame_table.entries[i].access_tracking_byte;
+                minAccessIndex = i;
+
+                //if at minimum possible value then break
+                if (minAccessValue == 0) {
+                    break;
+                }
+            }
+        }
+
+        //get victim page number
+        int victimPage = ps.frame_table.entries[minAccessIndex].page_table_idx;
+
+        //put victim data in backing store
+        write_to_back_store(ps.frame_table.entries[minAccessIndex].data, victimPage);
+
+        //grab new data from backing store and place in victim frame
+        read_from_back_store(ps.frame_table.entries[minAccessIndex].data, page_number);
+
+        //update victim frame page number
+        ps.frame_table.entries[minAccessIndex].page_table_idx = page_number;
+
+        //invalidate old page belonging to the victimized frame
+        ps.page_table.entries[victimPage].valid = 0;
+
+        //mark access bit on victim frame
+        ps.frame_table.entries[minAccessIndex].access_bit = 1;
+
+        //return results object
+        page_req_result = (page_request_result_t *) malloc(sizeof(page_request_result_t));
+        page_req_result->page_requested = page_number;
+        page_req_result->frame_replaced = minAccessIndex;
+        page_req_result->page_replaced = victimPage;
+    }
+
+    //update access bit of frame table for valid entries too
+    if (valid) {
+        int frame = ps.page_table.entries[page_number].frame_table_idx;
+        ps.frame_table.entries[frame].access_bit = 1; //set access bit
+    }
+
+    //update access byte if it is time to do so
+    if (clock_time % 99 == 0) {
+        //update access byte
+        frame_t* cFrame = NULL;
+
+        for (int i = 0; i < MAX_PHYSICAL_MEMORY_SIZE; ++i) {
+            cFrame = &ps.frame_table.entries[i];
+
+            //slide access byte over by 1
+            cFrame->access_tracking_byte = cFrame->access_tracking_byte >> 1;
+
+            //tack access bit on front of it
+            cFrame->access_tracking_byte += 128 * cFrame->access_bit;
+
+            //zero out access bit for next time span
+            cFrame->access_bit = 0;
+        }
+    }
+
 	return page_req_result;
+}
+
+/*
+* HELPER FUNCTION
+* Gets the number of bits in a provided byte and returns it
+* */
+int8_t get_num_bits(int8_t byte) {
+    int8_t i = 0;
+    int8_t numBits = 0;
+
+    //iterate 8 times
+    for (i = 0; i < 8; ++i) {
+        if ((float)byte >> 1 != (float)byte / 2) {
+            //pulled out a 1
+            numBits++;
+        }
+    }
 }
 
 
@@ -143,7 +243,89 @@ page_request_result_t* approx_least_recently_used (const uint16_t page_number, c
  * LFU IMPLEMENTATION : TODO IMPLEMENT
  * */
 page_request_result_t* least_frequently_used (const uint16_t page_number, const size_t clock_time) {
+    if (page_number >= MAX_PAGE_TABLE_ENTRIES_SIZE) {
+        return NULL;
+    }
+
+    //the result to return
+    //init to NULL until the page is validated or invalidated
 	page_request_result_t* page_req_result = NULL;
+
+    //check if page number is valid
+    bool valid = ps.page_table.entries[page_number].valid;
+
+    //if not valid
+    if (! valid) {
+        ////////////////////////////////////////////
+        //Page is invalid, so find victim, swap data and update tables
+
+        //find a victim frame
+        int8_t minAccessValue = 0;
+        int16_t minAccessIndex = 0;
+
+        for (int i = 0; i < MAX_PHYSICAL_MEMORY_SIZE; ++i) {
+            if (ps.frame_table.entries[i].access_tracking_byte < minAccessValue) {
+                //found a smaller value, so make note of it
+                minAccessValue = ps.frame_table.entries[i].access_tracking_byte;
+                minAccessIndex = i;
+
+                //if at minimum possible value then break
+                if (minAccessValue == 0) {
+                    break;
+                }
+            }
+        }
+
+        //get victim page number
+        int victimPage = ps.frame_table.entries[minAccessIndex].page_table_idx;
+
+        //put victim data in backing store
+        write_to_back_store(ps.frame_table.entries[minAccessIndex].data, victimPage);
+
+        //grab new data from backing store and place in victim frame
+        read_from_back_store(ps.frame_table.entries[minAccessIndex].data, page_number);
+
+        //update victim frame page number
+        ps.frame_table.entries[minAccessIndex].page_table_idx = page_number;
+
+        //invalidate old page belonging to the victimized frame
+        ps.page_table.entries[victimPage].valid = 0;
+
+        //mark access bit on victim frame
+        ps.frame_table.entries[minAccessIndex].access_bit = 1;
+
+        //return results object
+        page_req_result = (page_request_result_t *) malloc(sizeof(page_request_result_t));
+        page_req_result->page_requested = page_number;
+        page_req_result->frame_replaced = minAccessIndex;
+        page_req_result->page_replaced = victimPage;
+    }
+
+    //update access bit of frame table for valid entries too
+    if (valid) {
+        int frame = ps.page_table.entries[page_number].frame_table_idx;
+        ps.frame_table.entries[frame].access_bit = 1; //set access bit
+    }
+
+    //update access byte if it is time to do so
+    if (clock_time % 99 == 0) {
+        //update access byte
+        frame_t* cFrame = NULL;
+
+        for (int i = 0; i < MAX_PHYSICAL_MEMORY_SIZE; ++i) {
+            cFrame = &ps.frame_table.entries[i];
+
+            //slide access byte over by 1
+            cFrame->access_tracking_byte = cFrame->access_tracking_byte >> 1;
+
+            //tack access bit on front of it
+            cFrame->access_tracking_byte += 128 * cFrame->access_bit;
+
+            //zero out access bit for next time span
+            cFrame->access_bit = 0;
+        }
+    }
+
 	return page_req_result;
 }
 
@@ -152,9 +334,31 @@ page_request_result_t* least_frequently_used (const uint16_t page_number, const 
  * BACK STORE WRAPPER FUNCTIONS: TODO IMPLEMENT
  * */
 bool read_from_back_store (void *data, const unsigned int page) {
-	return false;
+
+	//validate inputs
+	if (page >= MAX_PAGE_TABLE_ENTRIES_SIZE || !data) {
+        return false;
+	}
+
+    int bsIndex = BS_PAGE_MAP(page);
+
+    //get data and return it
+    bool wasSuccess = back_store_read(ps.bs, bsIndex, data);
+
+    //made it this far!
+	return wasSuccess;
 }
 
 bool write_to_back_store (const void *data, const unsigned int page) {
-	return false;
+
+	//validate inputs
+	if (page >= MAX_PAGE_TABLE_ENTRIES_SIZE || !data) {
+        return false;
+	}
+
+	int bsIndex = BS_PAGE_MAP(page);
+
+    bool wasSuccess = back_store_write(ps.bs, bsIndex, data);
+
+	return wasSuccess;
 }
