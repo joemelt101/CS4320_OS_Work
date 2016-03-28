@@ -14,6 +14,8 @@ typedef enum { FS_REGULAR, FS_DIRECTORY } file_t;
 #define FS_FNAME_MAX (64)
 // INCLUDING null terminator
 
+#define _MAX_NUM_OPEN_FILES 256
+
 typedef struct {
     // You can add more if you want
     // vvv just don't remove or rename these vvv
