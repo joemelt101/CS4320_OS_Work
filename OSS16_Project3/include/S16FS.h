@@ -1,27 +1,63 @@
 #ifndef _S16FS_H__
 #define _S16FS_H__
 
+//Headers
 #include <sys/types.h>
-
 #include <dyn_array.h>
+#include <back_store.h>
 
-typedef struct S16FS S16FS_t;
-
-typedef enum { FS_SEEK_SET, FS_SEEK_CUR, FS_SEEK_END } seek_t;
-
-typedef enum { FS_REGULAR, FS_DIRECTORY } file_t;
-
-#define FS_FNAME_MAX (64)
-// INCLUDING null terminator
-
+//Constants
+#define FS_FNAME_MAX (64) //includes null terminator
 #define _MAX_NUM_OPEN_FILES 256
 
-typedef struct {
+//Structures
+typedef enum { FS_SEEK_SET, FS_SEEK_CUR, FS_SEEK_END } seek_t;
+typedef enum { FS_REGULAR, FS_DIRECTORY } file_t;
+
+//SIZE Any Reasonable Size will Do
+typedef struct
+{
+    uint32_t offset;
+    uint8_t file_record_index;
+} FileDes_t;
+
+typedef struct
+{
+    char fmd[44]; //can change later to suit needs
+} FileMeta_t;
+
+//MUST BE 128B!
+typedef struct
+{
     // You can add more if you want
     // vvv just don't remove or rename these vvv
     char name[FS_FNAME_MAX];
     file_t type;
+    FileMeta_t metadata;
+    uint16_t block_refs[8]; //holds the addresses of the blocks in the backing store
 } file_record_t;
+
+typedef struct
+{
+    char file_name[64];
+    uint8_t file_record_index;
+} directory_entry_t;
+
+
+//Should be 1KB in size
+typedef struct
+{
+    directory_entry_t entries[15];
+    char rest[49]; //can swap out for other data later...
+} directory_t;
+
+typedef struct S16FS
+{
+    file_record_t file_records[256]; //can have 256 files total (file = file or directory)
+    back_store *bs;
+    FileDes_t file_descriptors[256]; //can open 256 files at a time
+} S16FS_t;
+
 
 ///
 /// Formats (and mounts) an S16FS file for use
