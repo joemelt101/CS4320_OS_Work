@@ -11,6 +11,9 @@ typedef struct
     char* start;
 } path_t;
 
+//Prototypes
+static void path_destroy(path_t *);
+
 /**
     PURPOSE:
         Creates a path object that makes it convenient to search through a path name
@@ -23,6 +26,12 @@ static path_t* path_create(const char* path)
 {
     if (! path || path[0] != '/')
     {
+        return NULL;
+    }
+
+    if (strlen(path) == 1)
+    {
+        //also a problem
         return NULL;
     }
 
@@ -70,6 +79,24 @@ static path_t* path_create(const char* path)
 }
 
 /**
+    Purpose:
+        Returns the number of parts in a given path object.
+    Parameters:
+        path: The path to return the number of parts of.
+    Returns:
+        The number of parts in the provided path. Returns -1 if a null object is passed.
+**/
+static int path_get_num_parts(path_t *path)
+{
+    if (! path)
+    {
+        return -1;
+    }
+
+    return path->num_parts;
+}
+
+/**
     PURPOSE:
         Gets the zero based index part of the path
     PARAMETERS:
@@ -90,6 +117,11 @@ static char* path_get_part(path_t *path, int part)
         return path->start;
     }
 
+    if (part >= path->num_parts)
+    {
+        return NULL;
+    }
+
     for (int i = 0; i < path->length; ++i)
     {
         if (path->start[i] == '\0')
@@ -99,6 +131,13 @@ static char* path_get_part(path_t *path, int part)
 
         if (part == 0)
         {
+            char* res = &path->start[i + 1];
+
+            if (*res == '\0')
+            {
+                return NULL;
+            }
+
             return &path->start[i + 1];
         }
     }
@@ -124,18 +163,23 @@ static void path_destroy(path_t* path)
     PURPOSE:
         Traverses the file system to return the associated file record index.
     PARAMETERS:
-        path: The path to find
+        path: The path to find (ex: "a/b/c") (ex: "" = root = 0)
         fs: The filesystem to traverse through
     RETURNS:
-        A number > 0 if success
-        0 on failure
+        A number >= 0 if success
+        -1 on failure
 **/
-static uint8_t fs_traverse(S16FS_t *fs, const char *path)
+static int fs_traverse(S16FS_t *fs, const char *path)
 {
     if (! path)
     {
         //invalid path
-        return NULL;
+        return -1;
+    }
+
+    if (strlen(path) == 0)
+    {
+        return 0;
     }
 
     path_t *p = path_create(path);
@@ -143,25 +187,25 @@ static uint8_t fs_traverse(S16FS_t *fs, const char *path)
     if (! p)
     {
         //path is invalid
-        return 0;
+        return -1;
     }
 
     //load root directory
     file_record_t *f = &fs->file_records[0];
 
-    if (f.type != FS_DIRECTORY)
+    if (f->type != FS_DIRECTORY)
     {
         //not a directory and it's the root!
         //signal error
         path_destroy(p);
-        return 0;
+        return -1;
     }
 
     //allocate block
     uint8_t block[1024];
 
     //return index
-    uint8_t ret = 0;
+    int ret = 0;
 
     for (int i = 0; i < p->num_parts; ++i)
     {
@@ -172,28 +216,29 @@ static uint8_t fs_traverse(S16FS_t *fs, const char *path)
         if (back_store_read(fs->bs, f->block_refs[0], block) == false)
         {
             path_destroy(p);
-            return 0;
+            return -1;
         }
 
         //scan loaded dir data for next part of path
         char* next = path_get_part(p, i);
 
-        directory_t *dir = block;
+        directory_t *dir = (directory_t *)block;
 
         for (int j = 0; j < 15; ++j)
         {
             if (strcmp(dir->entries[j].file_name, next) == 0)
             {
                 //found the next part!
-                f = fs->file_records[dir->entries[j].file_record_index];
+                f = &fs->file_records[dir->entries[j].file_record_index];
                 ret = dir->entries[j].file_record_index; //record location of next file
+                break;
             }
 
             if (j == 14)
             {
                 //next part not in directory...
                 path_destroy(p);
-                return 0;
+                return -1;
             }
         }
 
@@ -202,14 +247,14 @@ static uint8_t fs_traverse(S16FS_t *fs, const char *path)
             //reg or dir filetype and at the end of path, so we found our file
             break;
         }
-        else if (f.type == FS_REGULAR && i < p->num_parts - 1)
+        else if (f->type == FS_REGULAR && i < p->num_parts - 1)
         {
             //reg filetype and there is still some distance to go
             //error!
-            ret 0;
+            ret = -1;
             break;
         }
-        else if (f.type == FS_DIRECTORY && i < p->num_parts - 1)
+        else if (f->type == FS_DIRECTORY && i < p->num_parts - 1)
         {
             //dir filetype and there is some distance to go
             //load next directory and continue
@@ -218,7 +263,7 @@ static uint8_t fs_traverse(S16FS_t *fs, const char *path)
         else
         {
             //some uncaught error
-            ret = 0;
+            ret = -1;
             break;
         }
     }
@@ -240,27 +285,6 @@ S16FS_t *fs_format(const char *path)
     {
         return NULL;
     }
-
-    /*
-    printf("File Record Size: %d\n", sizeof(file_record_t));
-    printf("Directory Struct Size: %d\n", sizeof(directory_t));
-    */
-
-
-    char path2[50] = "/hello/world/how/are/you.c";
-    path_t *p = create_path(path2);
-
-    for (int i = 0; i < 6; ++i)
-    {
-        printf("%d: %s\n", i, get_part(p, i));
-    }
-
-    printf("%s\n", path2);
-
-    destroy_path(p);
-
-    printf("%s\n", path2);
-
 
     //create, flush, and close a back_store to setup the foundation for the S16FS file
     back_store *bs = back_store_create(path);
@@ -291,8 +315,26 @@ S16FS_t *fs_format(const char *path)
         }
     }
 
+    //now write first directory file
+    file_record_t f;
+    memcpy(f.name, "root", sizeof(char) * 5);
+    f.type = FS_DIRECTORY;
+    int res = back_store_allocate(bs);
+
+    if (res == 0)
+    {
+        //error allocating!
+        back_store_close(bs);
+        return NULL;
+    }
+
+    //success!
+    f.block_refs[0] = res;
+
     //mount the image
     S16FS_t *fs = (S16FS_t *) calloc(1, sizeof(S16FS_t));
+
+    fs->file_records[0] = f; //set the first file record to the root directory...
 
     if (! fs)
     {
@@ -401,18 +443,230 @@ int fs_unmount(S16FS_t *fs)
 ///
 int fs_create(S16FS_t *fs, const char *path, file_t type)
 {
+    printf("Creating: %s\n", path);
+
+    /////////////////////
+    //Validate parameters
+
     if (! fs || ! path)
     {
-        return NULL;
+        printf("Bad parameters\n");
+        return -1;
     }
 
     if (type != FS_REGULAR && type != FS_DIRECTORY)
     {
-        return NULL;
+        printf("Bad type plugged in\n");
+        return -1;
     }
 
-    //traverse to containing directory
-    fs_traverse(fs, path);
+    ////////////////
+    //Parse the path
+
+    char *path_without_end = NULL;
+    char *path_editable = strdup(path);
+    path_t *p = path_create(path);
+    char *new_filename = path_get_part(p, path_get_num_parts(p) - 1);
+
+    printf("New Filename: %s\n", new_filename);
+
+    if (! p)
+    {
+        //invalid path detected
+        printf("Invalid path detected\n");
+        free (path_editable);
+        return -1;
+    }
+
+    char *c = path_editable;
+
+    while (*c != '\0')
+    {
+        c++;
+    }
+    while (*c != '/')
+    {
+        c--;
+    }
+
+    *c = '\0';
+
+    path_without_end = strdup(path_editable);
+
+    *c = '/'; //restore editable path
+
+    //////////////////////////////////
+    //Traverse to containing directory
+
+    int index = fs_traverse(fs, path_without_end);
+
+    if (index == -1)
+    {
+        //couldn't find path specified
+        printf("Couldn't find path specified\n");
+        free(path_editable);
+        free(path_without_end);
+        return -1;
+    }
+
+    ////////////////////////
+    //Add entry to directory
+
+    //get file associated with directory
+    file_record_t *rec = &fs->file_records[index];
+
+    //get block of directory entries
+    directory_t dir;
+
+    if (back_store_read(fs->bs, rec->block_refs[0], &dir) == false)
+    {
+        printf("Failed to read from back store!\n");
+        free(path_editable);
+        free(path_without_end);
+        path_destroy(p);
+        return -1;
+    }
+
+    //search through for empty spot
+    int i = 0;
+
+    for ( ; i < 15; ++i)
+    {
+        if (strcmp(dir.entries[i].file_name, new_filename) == 0)
+        {
+            //file already exists in directory -> error!
+            printf("File already exists with that name!");
+            free(path_editable);
+            free(path_without_end);
+            path_destroy(p);
+            return -1;
+        }
+
+        if (dir.entries[i].file_name[0] == '\0')
+        {
+            //found one!
+            break;
+        }
+    }
+
+    if (i == 15)
+    {
+        //didn't find an empty spot
+        //error!
+        printf("Directory is full!");
+        free(path_editable);
+        free(path_without_end);
+        path_destroy(p);
+        return -1;
+    }
+
+    //else, found an empty spot
+    //so populate it
+    //first copy the file name
+    char* filename = path_get_part(p, path_get_num_parts(p) - 1);
+    memcpy(dir.entries[i].file_name, filename, sizeof(char) * (strlen(filename) + 1));
+
+    //second, create the file object
+    int new_file_index = 0;
+    file_record_t *new_file = NULL;
+
+    //look for an open spot and set file information
+    for (int j = 1; j < _MAX_NUM_FS_FILES; ++j)
+    {
+        if (fs->file_records[j].name[0] == '\0')
+        {
+            //found an empty spot! Fill in file data...
+            new_file = &fs->file_records[j];
+            new_file_index = j;
+
+            memcpy(new_file->name, filename, strlen(filename) + 1);
+
+            new_file->type = type;
+
+            FileMeta_t *meta = (FileMeta_t *)calloc(1, sizeof(FileMeta_t));
+
+            if (! meta)
+            {
+                printf("Failed to allocated metadata memory\n");
+                free(path_editable);
+                free(path_without_end);
+                path_destroy(p);
+                return -1;
+            }
+
+            new_file->metadata = *meta;
+            free(meta);
+
+            for (int z = 0; z < 8; ++z)
+                new_file->block_refs[z] = 0;
+
+            if (new_file->type == FS_DIRECTORY)
+            {
+                //need to add block of data
+                int ref = back_store_allocate(fs->bs);
+
+                if (ref == 0)
+                {
+                    //error allocating memory
+                    printf("Couldn't allocate space for new directory!\n");
+                    free(path_editable);
+                    free(path_without_end);
+                    path_destroy(p);
+                    return -1;
+                }
+
+                uint8_t block[1024] = {0};
+
+                if (back_store_write(fs->bs, ref, block) == false)
+                {
+                    printf("Failed to zero out space for new directory\n");
+                    free(path_editable);
+                    free(path_without_end);
+                    path_destroy(p);
+                    return -1;
+                }
+
+                new_file->block_refs[0] = ref;
+            }
+
+            break;
+        }
+    }
+
+    if (new_file == NULL)
+    {
+        //couldn't find an open file
+        //error!
+        printf("Couldn't find an open file\n");
+        free(path_editable);
+        free(path_without_end);
+        path_destroy(p);
+        return -1;
+    }
+
+    //now, copy the record index of the newly created file
+    dir.entries[i].file_record_index = new_file_index;
+
+    //push updated directory data to block
+    if (back_store_write(fs->bs, rec->block_refs[0], &dir) == false)
+    {
+        //problems!
+        printf("Failed to write to backing store\n");
+        free(path_editable);
+        free(path_without_end);
+        path_destroy(p);
+        return -1;
+    }
+
+    /////////////
+    //Free memory
+
+    free(path_editable);
+    free(path_without_end);
+    path_destroy(p);
+
+    //////////////
+    //Return value
 
     return 0;
 }

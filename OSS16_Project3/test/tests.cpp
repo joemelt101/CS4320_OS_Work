@@ -117,10 +117,10 @@ TEST(b_tests, file_creation_one) {
     ASSERT_NE(fs, nullptr);
 
     // CREATE_FILE 1
-    ASSERT_EQ(fs_create(fs, filenames[0], FS_REGULAR), 0);
+    ASSERT_EQ(fs_create(fs, filenames[0], FS_REGULAR), 0); //good
 
     // CREATE_FILE 2
-    ASSERT_EQ(fs_create(fs, filenames[1], FS_DIRECTORY), 0);
+    ASSERT_EQ(0, fs_create(fs, filenames[1], FS_DIRECTORY)); //failing...
 
     // CREATE_FILE 3
     ASSERT_EQ(fs_create(fs, filenames[2], FS_REGULAR), 0);
@@ -178,7 +178,6 @@ TEST(b_tests, file_creation_one) {
     ASSERT_LT(fs_create(fs, filenames[11], FS_REGULAR), 0);
 
     // Closing this file now for inspection to make sure these tests didn't mess it up
-
     fs_unmount(fs);
 
     score += 30;

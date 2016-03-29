@@ -9,6 +9,7 @@
 //Constants
 #define FS_FNAME_MAX (64) //includes null terminator
 #define _MAX_NUM_OPEN_FILES 256
+#define _MAX_NUM_FS_FILES 256
 
 //Structures
 typedef enum { FS_SEEK_SET, FS_SEEK_CUR, FS_SEEK_END } seek_t;
@@ -53,9 +54,9 @@ typedef struct
 
 typedef struct S16FS
 {
-    file_record_t file_records[256]; //can have 256 files total (file = file or directory)
+    file_record_t file_records[_MAX_NUM_FS_FILES]; //can have 256 files total (file = file or directory)
     back_store *bs;
-    FileDes_t file_descriptors[256]; //can open 256 files at a time
+    FileDes_t file_descriptors[_MAX_NUM_OPEN_FILES]; //can open 256 files at a time
 } S16FS_t;
 
 
