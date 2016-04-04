@@ -14,6 +14,10 @@ typedef struct
 //Prototypes
 static void path_destroy(path_t *);
 
+///////////////////////
+// Helper Functions ///
+///////////////////////
+
 /**
     PURPOSE:
         Creates a path object that makes it convenient to search through a path name
@@ -24,18 +28,25 @@ static void path_destroy(path_t *);
 **/
 static path_t* path_create(const char* path)
 {
+    //validate that the path exists and it starts with '/'
     if (! path || path[0] != '/')
     {
         return NULL;
     }
 
+    //validate it doesn't end with a slash
+    if (path[strlen(path) - 1] == '/')
+    {
+        return NULL;
+    }
+
+    //check for just '/'
     if (strlen(path) == 1)
     {
         //also a problem
         return NULL;
     }
 
-    //TODO: return NULL if an invalid path is detected
     path_t *ret = (path_t *) malloc(sizeof(path_t) - 1); //ignore the first slash
     ret->num_parts = 1;
     ret->length = strlen(path); //add 1 to include null terminator in length (-1 for beginning slash and +1 for null terminator = +0)
@@ -85,7 +96,7 @@ static path_t* path_create(const char* path)
         path: The path to return the number of parts of.
     Returns:
         The number of parts in the provided path. Returns -1 if a null object is passed.
-**/
+
 static int path_get_num_parts(path_t *path)
 {
     if (! path)
@@ -94,7 +105,7 @@ static int path_get_num_parts(path_t *path)
     }
 
     return path->num_parts;
-}
+} **/
 
 /**
     PURPOSE:
@@ -157,6 +168,82 @@ static void path_destroy(path_t* path)
 {
     free(path->start);
     free(path);
+}
+
+/**
+    PURPOSE:
+        Finds the first available location in the provided file system object (fs) and formats a file record there.
+    PARAMETERS:
+        fs: The file system format a new file record in
+        filename: The name of the new file to format
+        filetype: The type of the file to create
+    RETURNS:
+        NULL if error
+        The pointer to the file if everything worked out
+**/
+static file_record_t* allocate_file_record(S16FS* fs, char* filename, file_t filetype)
+{
+    if (! fs || ! filename || (filetype != FS_REGULAR && filetype != FS_DIRECTORY))
+    {
+        printf("Invalid parameters passed to create_file_record\n.");
+        return NULL;
+    }
+
+    //discover open location to place file
+    for (int i = 0; i < _MAX_NUM_FS_FILES; ++i)
+    {
+        if (fs->file_records[i].name[0] == '\0')
+        {
+            //found an index of an open location!
+            //grab file
+            file_record_t* f = &fs->file_records[i];
+
+            //now set its properties
+
+            //set the name
+            memcpy(f->name, filename, strlen(filename) + 1); //add one to include the null terminator
+
+            //set the type
+            f->type = filetype;
+
+            //clear out block_refs
+            for (int j = 0; j < 8; ++j)
+            {
+                f->block_refs[j] = 0;
+            }
+
+            //if a directory, allocate first block to point to first open location
+            if (f->type == FS_DIRECTORY)
+            {
+                uint32_t index = back_store_allocate(fs->bs);
+
+                if (index == 0)
+                {
+                    printf("Failed to allocate block from the back store in allocate_file_record.\n");
+                    return NULL;
+                }
+
+                //else, a valid location was allocated
+                f->block_refs[0] = index;
+
+                //clear block at index
+                uint8_t block[1024] = {0};
+
+                if (! back_store_write(fs->bs, index, block))
+                {
+                    printf("Failed to write to the backing store in allocate_file_record!\n");
+                    return NULL;
+                }
+            }
+
+            //return the newly allocated location
+            return f;
+        }
+    }
+
+    //made it through without a single open spot...
+    printf("Failed in create_file_record: The maximum number of files has already been allocated!\n");
+    return NULL;
 }
 
 /**
@@ -272,78 +359,125 @@ static int fs_traverse(S16FS_t *fs, const char *path)
     return ret;
 }
 
-// Milestone 1
+//////////////////
+// Milestone 1 ///
+//////////////////
 
 ///
 /// Formats (and mounts) an S16FS file for use
 /// \param fname The file to format
 /// \return Mounted S16FS object, NULL on error
 ///
-S16FS_t *fs_format(const char *path)
+S16FS_t* fs_format(const char *path)
 {
     if (! path)
     {
+        printf("Null path passed to fs_format.\n");
         return NULL;
     }
 
-    //create, flush, and close a back_store to setup the foundation for the S16FS file
+    //////////////////////////
+    //Create the backing store
+
     back_store *bs = back_store_create(path);
 
     if (bs == NULL)
     {
-        //an error occurred
+        printf("Failed to create a backing store in fs_format().\n");
+        printf("BS creation path: %s.\n", path);
         return NULL;
     }
 
+    ////////////////////////////////////////////////////
+    //Create zeroed out inode table in the backing store
+
+    //this will exist in BS blocks 8 through 39 (32 KB total)
+
     uint8_t data[1024] = {0}; //create a KB of zeroed out data
 
-    //allocate and flush proper data to the file
     for (int i = 8; i < 40; ++i)
     {
         if (! back_store_request(bs, i))
         {
             //something failed to allocate
+            printf("Failed to allocate block index %d in the backing store.\n", i);
             back_store_close(bs);
             return NULL;
         }
 
         if (! back_store_write(bs, i, data))
         {
-            //cleanup and return
+            printf("Failed to write to block index %d in the backing store.\n", i);
             back_store_close(bs);
             return NULL;
         }
     }
 
-    //now write first directory file
-    file_record_t f;
-    memcpy(f.name, "root", sizeof(char) * 5);
-    f.type = FS_DIRECTORY;
-    int res = back_store_allocate(bs);
+    ///////////////////////////
+    //Create File System object
 
-    if (res == 0)
-    {
-        //error allocating!
-        back_store_close(bs);
-        return NULL;
-    }
-
-    //success!
-    f.block_refs[0] = res;
-
-    //mount the image
-    S16FS_t *fs = (S16FS_t *) calloc(1, sizeof(S16FS_t));
-
-    fs->file_records[0] = f; //set the first file record to the root directory...
+    S16FS_t *fs = (S16FS_t *)calloc(1, sizeof(S16FS));
 
     if (! fs)
     {
+        printf("Failed to allocate the file system in main memory.\n");
+        back_store_close(bs);
         return NULL;
     }
 
     fs->bs = bs;
 
-    //return newly created object
+    ////////////////////////////////////////////////////////////////
+    //Create and write the first directory file to the backing store
+
+    //create it...
+    //do not free root_inode as it will be freed by other means
+    char root_name[5] = "root";
+    file_record_t *root_inode = allocate_file_record(fs, root_name, FS_DIRECTORY);
+
+    if (! root_inode)
+    {
+        printf("Error allocating root directory!\n");
+        back_store_close(bs);
+        return NULL;
+    }
+
+    //write it...
+    //grab the first block of data (because it's the root directory)
+    if (! back_store_read(bs, 8, data))
+    {
+        printf("Failed to read in first block from the backing store!\n");
+        back_store_close(bs);
+        return NULL;
+    }
+
+    file_record_t *file_block = (file_record_t *)data;
+    file_block[0] = *root_inode;
+
+    if (! back_store_write(bs, 8, file_block))
+    {
+        printf("Failed to write root directory to backing store!\n");
+        back_store_close(bs);
+        return NULL;
+    }
+
+    //Free dummy fs and bs
+    free(fs);
+    back_store_close(bs);
+
+    /////////////////////////////////////////////
+    //Mount the newly created image and return it
+
+    fs = fs_mount(path);
+
+    if (! fs)
+    {
+        printf("Failed to mount the newly formatted image!\n");
+        back_store_close(bs);
+        return NULL;
+    }
+
+    //return newly created object since all is well...
     return fs;
 }
 
@@ -354,23 +488,34 @@ S16FS_t *fs_format(const char *path)
 ///
 S16FS_t *fs_mount(const char *path)
 {
+    /////////////////////
+    //Validate parameters
+
     if (! path)
     {
+        printf("Invalid path passed in!\n");
         return NULL;
     }
+
+    ////////////////////
+    //Open backing store
 
     back_store_t *bs = back_store_open(path);
 
     if (! bs)
     {
-        //failed to open backing store...
+        printf("Failed to open backing store!\n");
         return NULL;
     }
+
+    ///////////////////////////
+    //Create file system object
 
     S16FS_t *fs = (S16FS_t *) calloc(1, sizeof(S16FS_t));
 
     if (! fs)
     {
+        printf("fs_mount: Failed to allocate memory for the file system object!\n");
         back_store_close(bs);
         return NULL;
     }
@@ -388,6 +533,7 @@ S16FS_t *fs_mount(const char *path)
         //load block associated with i
         if (back_store_read(fs->bs, i, block) == false)
         {
+            printf("fs_mount: Failed to read from the backing store!\n");
             //error occurred reading in data
             free(fs);
             back_store_close(bs);
@@ -408,27 +554,37 @@ S16FS_t *fs_mount(const char *path)
 ///
 int fs_unmount(S16FS_t *fs)
 {
+    /////////////////////
+    //Validate parameters
+
     if (! fs)
     {
+        printf("Null fs object passed to fs_unmount!\n");
         return -1;
     }
 
-    //flush inode table to bs
+    ////////////////////////////////////////
+    //Flush inode table to the backing store
+
     for (int i = 8; i < 40; ++i)
     {
         if (back_store_write(fs->bs, i, &fs->file_records[8*i]) == false)
         {
+            printf("fs_unmount: Failed to write block to back_store.\n");
             back_store_close(fs->bs);
             free(fs);
             return -2;
         }
     }
 
-    //close the backing store
-    back_store_close(fs->bs);
+    ////////////////
+    //Cleanup memory
 
-    //free the S16FS_t object
+    back_store_close(fs->bs);
     free(fs);
+
+    ////////////////
+    //Return Success
 
     return 0;
 }
@@ -443,40 +599,39 @@ int fs_unmount(S16FS_t *fs)
 ///
 int fs_create(S16FS_t *fs, const char *path, file_t type)
 {
-    printf("Creating: %s\n", path);
-
     /////////////////////
     //Validate parameters
 
     if (! fs || ! path)
     {
-        printf("Bad parameters\n");
+        printf("fs_create: Bad parameters passed in.\n");
         return -1;
     }
 
     if (type != FS_REGULAR && type != FS_DIRECTORY)
     {
-        printf("Bad type plugged in\n");
+        printf("fs_create: Bad type plugged in.\n");
         return -1;
     }
 
     ////////////////
     //Parse the path
 
-    char *path_without_end = NULL;
     char *path_editable = strdup(path);
-    path_t *p = path_create(path);
-    char *new_filename = path_get_part(p, path_get_num_parts(p) - 1);
+    char *path_without_end = NULL;
+    char *new_filename = NULL;
 
-    printf("New Filename: %s\n", new_filename);
+    path_t *p = path_create(path_editable);
 
     if (! p)
     {
         //invalid path detected
-        printf("Invalid path detected\n");
+        printf("fs_create: Invalid path detected\n");
         free (path_editable);
         return -1;
     }
+
+    path_destroy(p); //no need for it past this
 
     char *c = path_editable;
 
@@ -492,6 +647,7 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
     *c = '\0';
 
     path_without_end = strdup(path_editable);
+    new_filename = strdup(c + 1);
 
     *c = '/'; //restore editable path
 
@@ -499,18 +655,19 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
     //Traverse to containing directory
 
     int index = fs_traverse(fs, path_without_end);
+    free(path_editable);
+    free(path_without_end);
 
     if (index == -1)
     {
         //couldn't find path specified
         printf("Couldn't find path specified\n");
-        free(path_editable);
-        free(path_without_end);
+        free(new_filename);
         return -1;
     }
 
-    ////////////////////////
-    //Add entry to directory
+    ////////////////////////////////////////
+    //Create file and add entry to directory
 
     //get file associated with directory
     file_record_t *rec = &fs->file_records[index];
@@ -521,9 +678,7 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
     if (back_store_read(fs->bs, rec->block_refs[0], &dir) == false)
     {
         printf("Failed to read from back store!\n");
-        free(path_editable);
-        free(path_without_end);
-        path_destroy(p);
+        free(new_filename);
         return -1;
     }
 
@@ -535,10 +690,8 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
         if (strcmp(dir.entries[i].file_name, new_filename) == 0)
         {
             //file already exists in directory -> error!
-            printf("File already exists with that name!");
-            free(path_editable);
-            free(path_without_end);
-            path_destroy(p);
+            printf("File already exists with that name!\n");
+            free(new_filename);
             return -1;
         }
 
@@ -553,18 +706,14 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
     {
         //didn't find an empty spot
         //error!
-        printf("Directory is full!");
-        free(path_editable);
-        free(path_without_end);
-        path_destroy(p);
+        printf("Directory is full!\n");
+        free(new_filename);
         return -1;
     }
 
     //else, found an empty spot
     //so populate it
-    //first copy the file name
-    char* filename = path_get_part(p, path_get_num_parts(p) - 1);
-    memcpy(dir.entries[i].file_name, filename, sizeof(char) * (strlen(filename) + 1));
+    memcpy(dir.entries[i].file_name, new_filename, sizeof(char) * (strlen(new_filename) + 1));
 
     //second, create the file object
     int new_file_index = 0;
@@ -579,7 +728,8 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
             new_file = &fs->file_records[j];
             new_file_index = j;
 
-            memcpy(new_file->name, filename, strlen(filename) + 1);
+            memcpy(new_file->name, new_filename, strlen(new_filename) + 1);
+            free(new_filename);
 
             new_file->type = type;
 
@@ -588,9 +738,6 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
             if (! meta)
             {
                 printf("Failed to allocated metadata memory\n");
-                free(path_editable);
-                free(path_without_end);
-                path_destroy(p);
                 return -1;
             }
 
@@ -607,11 +754,7 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
 
                 if (ref == 0)
                 {
-                    //error allocating memory
                     printf("Couldn't allocate space for new directory!\n");
-                    free(path_editable);
-                    free(path_without_end);
-                    path_destroy(p);
                     return -1;
                 }
 
@@ -620,9 +763,6 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
                 if (back_store_write(fs->bs, ref, block) == false)
                 {
                     printf("Failed to zero out space for new directory\n");
-                    free(path_editable);
-                    free(path_without_end);
-                    path_destroy(p);
                     return -1;
                 }
 
@@ -635,12 +775,8 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
 
     if (new_file == NULL)
     {
-        //couldn't find an open file
-        //error!
         printf("Couldn't find an open file\n");
-        free(path_editable);
-        free(path_without_end);
-        path_destroy(p);
+        free(new_filename);
         return -1;
     }
 
@@ -650,28 +786,18 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
     //push updated directory data to block
     if (back_store_write(fs->bs, rec->block_refs[0], &dir) == false)
     {
-        //problems!
         printf("Failed to write to backing store\n");
-        free(path_editable);
-        free(path_without_end);
-        path_destroy(p);
         return -1;
     }
 
-    /////////////
-    //Free memory
-
-    free(path_editable);
-    free(path_without_end);
-    path_destroy(p);
-
-    //////////////
-    //Return value
-
+    ////////////////
+    //Return success
     return 0;
 }
 
-// Milestone 2
+//////////////////
+// Milestone 2 ///
+//////////////////
 
 ///
 /// Opens the specified file for use
@@ -745,7 +871,9 @@ int fs_remove(S16FS_t *fs, const char *path)
     return -1;
 }
 
-// Milestone 3
+//////////////////
+// Milestone 3 ///
+//////////////////
 
 ///
 /// Moves the R/W position of the given descriptor to the given location
@@ -810,8 +938,9 @@ dyn_array_t *fs_get_dir(S16FS_t *fs, const char *path)
     return NULL;
 }
 
-
-// Extra Credit!!! :D
+/////////////////////////
+// Extra Credit!!! :D ///
+/////////////////////////
 
 ///
 /// !!! Graduate Level/Undergrad Bonus !!!
