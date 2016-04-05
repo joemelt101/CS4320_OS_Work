@@ -55,7 +55,7 @@ typedef struct
 typedef struct S16FS
 {
     file_record_t file_records[_MAX_NUM_FS_FILES]; //can have 256 files total (file = file or directory)
-    back_store *bs;
+    back_store_t *bs;
     FileDes_t file_descriptors[_MAX_NUM_OPEN_FILES]; //can open 256 files at a time
 } S16FS_t;
 

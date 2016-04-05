@@ -22,9 +22,14 @@ set(CMAKE_CXX_FLAGS " -std=c++11 ${SHARED_FLAGS} ")
 set(CMAKE_C_FLAGS " -std=c99 ${SHARED_FLAGS} ")
 
 add_executable(fs_test test/tests.cpp)
-# TODO: add SoneSixFS
-# target_link_libraries(fs_test SoneSixFS ${back_store_lib} ${dyn_array_lib} ${bitmap_lib} ${GTEST_LIBRARIES} pthread)
-target_link_libraries(fs_test ${back_store_lib} ${dyn_array_lib} ${bitmap_lib} ${GTEST_LIBRARIES} pthread)
+add_library(SoneSixFS SHARED src/S16FS.c)
+set_target_properties(SoneSixFS PROPERTIES POSITION_INDEPENDANT_CODE ON)
+
+install(TARGETS SoneSixFS DESTINATION lib)
+install(FILES include/S16FS.h DESTINATION include)
+
+target_link_libraries(fs_test SoneSixFS ${back_store_lib} ${dyn_array_lib} ${bitmap_lib} ${GTEST_LIBRARIES} pthread)
+target_link_libraries(SoneSixFS ${back_store_lib} ${dyn_array_lib} ${bitmap_lib})
 
 enable_testing()
 add_test(NAME    fs_test

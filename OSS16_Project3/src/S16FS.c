@@ -3,6 +3,8 @@
 #include <dyn_array.h>
 #include <back_store.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 typedef struct
 {
@@ -47,7 +49,7 @@ static path_t* path_create(const char* path)
         return NULL;
     }
 
-    path_t *ret = (path_t *) malloc(sizeof(path_t) - 1); //ignore the first slash
+    path_t *ret = (path_t *) malloc(sizeof(path_t)); //ignore the first slash
     ret->num_parts = 1;
     ret->length = strlen(path); //add 1 to include null terminator in length (-1 for beginning slash and +1 for null terminator = +0)
 
@@ -166,6 +168,11 @@ static char* path_get_part(path_t *path, int part)
 **/
 static void path_destroy(path_t* path)
 {
+    if (! path)
+    {
+        return;
+    }
+
     free(path->start);
     free(path);
 }
@@ -181,7 +188,7 @@ static void path_destroy(path_t* path)
         NULL if error
         The pointer to the file if everything worked out
 **/
-static file_record_t* allocate_file_record(S16FS* fs, char* filename, file_t filetype)
+static file_record_t* allocate_file_record(S16FS_t* fs, char* filename, file_t filetype)
 {
     if (! fs || ! filename || (filetype != FS_REGULAR && filetype != FS_DIRECTORY))
     {
@@ -379,7 +386,7 @@ S16FS_t* fs_format(const char *path)
     //////////////////////////
     //Create the backing store
 
-    back_store *bs = back_store_create(path);
+    back_store_t *bs = back_store_create(path);
 
     if (bs == NULL)
     {
@@ -416,7 +423,7 @@ S16FS_t* fs_format(const char *path)
     ///////////////////////////
     //Create File System object
 
-    S16FS_t *fs = (S16FS_t *)calloc(1, sizeof(S16FS));
+    S16FS_t *fs = (S16FS_t *)calloc(1, sizeof(S16FS_t));
 
     if (! fs)
     {
@@ -568,7 +575,7 @@ int fs_unmount(S16FS_t *fs)
 
     for (int i = 8; i < 40; ++i)
     {
-        if (back_store_write(fs->bs, i, &fs->file_records[8*i]) == false)
+        if (back_store_write(fs->bs, i, &fs->file_records[(i-8)*8]) == false)
         {
             printf("fs_unmount: Failed to write block to back_store.\n");
             back_store_close(fs->bs);
@@ -811,7 +818,7 @@ int fs_open(S16FS_t *fs, const char *path)
 {
     if (! fs || ! path)
     {
-        return NULL;
+        return -1;
     }
 
     return -1;
@@ -957,7 +964,7 @@ int fs_move(S16FS_t *fs, const char *src, const char *dst)
 {
     if (! fs || ! src || ! dst)
     {
-        return NULL;
+        return -1;
     }
 
     return -1;
