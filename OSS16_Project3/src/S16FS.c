@@ -821,7 +821,49 @@ int fs_open(S16FS_t *fs, const char *path)
         return -1;
     }
 
-    return -1;
+    ////////////////////////
+    //Get the requested file
+
+    int fileIndex = fs_traverse(fs, path);
+
+    //ensure path exists
+    if (fileIndex == -1)
+    {
+        //error finding the file / directory -- must not exist or be an invalid parameter
+        return -2;
+    }
+
+    //Make sure it isn't a directory
+    file_record_t* fileRecord = &fs->file_records[fileIndex];
+
+    if (fileRecord->type != FS_REGULAR)
+    {
+        //Entered path is not a regular file type. May be a directory or an invalid type.
+        return -3;
+    }
+
+    //////////////////////////////
+    //Create "new" file descriptor
+
+    //find an open file descriptor
+    for (uint8_t i = 0; i < _MAX_NUM_OPEN_FILES; ++i)
+    {
+        if (fs->file_descriptors[i].file_record_index == 0)
+        {
+            //root used as a way of showing open file descriptors
+            //0 means it's open
+            //place information inside
+            FileDes_t *fd = &fs->file_descriptors[i];
+            fd->
+        }
+    }
+
+    //fill in information for file found above
+
+    /////////////////////////////////////
+    //Return the file descriptor location
+
+    return -20;
 }
 
 ///
