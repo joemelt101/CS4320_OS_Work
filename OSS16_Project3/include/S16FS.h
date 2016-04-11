@@ -24,7 +24,8 @@ typedef struct
 
 typedef struct
 {
-    char fmd[44]; //can change later to suit needs
+    uint32_t fileSize; //the size of the file
+    char fmd[40]; //can change later to suit needs
 } FileMeta_t;
 
 //MUST BE 128B!

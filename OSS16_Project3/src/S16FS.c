@@ -15,6 +15,7 @@ typedef struct
 
 //Prototypes
 static void path_destroy(path_t *);
+static void get_block(uint32_t offset);
 
 ///////////////////////
 // Helper Functions ///
@@ -175,6 +176,98 @@ static void path_destroy(path_t* path)
 
     free(path->start);
     free(path);
+}
+
+/**
+    PURPOSE:
+        Returns a block id for a given file offset
+    PARAMETERS:
+        fs: A pointer to the file system object
+        file: A pointer to the file record
+        offset: A zero based index to the byte within the file to retrieve the block index for
+    RETURNS:
+        Success: An integer containing the backing store block id associated with the provided offset and file record
+        Failure: A negative integer
+**/
+static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t fileOffset)
+{
+    if (! fileRecord || fileOffset >= fileRecord->metadata.fileSize)
+    {
+        //invalid parameters
+        return -1;
+    }
+
+    ///////////////////////////////////////
+    //Traverse to the block within the file
+
+    //holds the return value
+    int blockBSIndex = 0;
+
+    //holds the number of 1024 blocks that need to be passed to arrive at destination
+    int fileBlockIndex = fileOffset / 1024; //determine the base location for the fileBlockIndex
+
+    if (fileBlockIndex < 6) //if within index of 6
+    {
+        //in a direct block, easy to return
+        return fileRecord->block_refs[fileBlockIndex];
+    }
+    else if (fileBlockIndex <= 517) //if between [6, 517]
+    {
+        //in an indirect block
+
+        //calculate which indirect block is needed
+        int directBlockIndex = fileBlockIndex - 6; //subtract 6 to remove direct blocks passed over
+
+        //grab the indirect block of data
+        uint8_t data[1024];
+        int indirectBlockBSIndex = fileRecord->block_refs[6];
+
+        if (! back_store_read(fs->bs, indirectBlockBSIndex, &data)
+        {
+            //error reading from backing store
+            return -2
+        }
+
+        //cast data block to readable format
+        uint16_t *directPointers = &data; //512 of these...
+
+        //return the address
+        return directPointers[directBlockIndex];
+    }
+    else if (fileBlockIndex <= 262661) // should be [518->262,661]
+    {
+        //in a double indirect block
+        int indirectBlockIndex = (fileBlockIndex - 518) / 512; //subtract 518 to remove direct and indirect block locations and divide by 516 to ensure proper one received
+        int directBlockIndex = (fileBlockIndex - 518) % 512;
+
+        //load in indirect pointers
+        uint8_t data[1024];
+
+        int doubleIndirectBlockBSIndex = fileRecord->block_refs[7];
+
+        if (! back_store_read(fs->bs, doubleIndirectBlockBSIndex, &data))
+        {
+            //failed to read data from BS
+            return -3;
+        }
+
+        uint16_t *indirectPointers = &data;
+
+        //now find indirect block
+        if (! back_store_read(fs->bs, indirectPointers[indirectBlockIndex], &data))
+        {
+            //failed to read from BS
+            return -4;
+        }
+
+        uint16_t *directPointers = &data;
+
+        //now find direct location
+        return directPointers[directBlockIndex];
+    }
+
+
+    return -5; //out of bounds
 }
 
 /**
@@ -846,6 +939,8 @@ int fs_open(S16FS_t *fs, const char *path)
     //Create "new" file descriptor
 
     //find an open file descriptor
+    uint8_t fileDescriptorIndex = 0;
+
     for (uint8_t i = 0; i < _MAX_NUM_OPEN_FILES; ++i)
     {
         if (fs->file_descriptors[i].file_record_index == 0)
@@ -854,16 +949,22 @@ int fs_open(S16FS_t *fs, const char *path)
             //0 means it's open
             //place information inside
             FileDes_t *fd = &fs->file_descriptors[i];
-            fd->
+            fd->offset = 0;
+            fd->file_record_index = fileIndex;
+            fileDescriptorIndex = fileIndex;
         }
     }
 
-    //fill in information for file found above
+    if (fileDescriptorIndex == 0)
+    {
+        //couldn't find an open descriptor
+        return -4;
+    }
 
     /////////////////////////////////////
     //Return the file descriptor location
 
-    return -20;
+    return fileDescriptorIndex;
 }
 
 ///
@@ -874,12 +975,29 @@ int fs_open(S16FS_t *fs, const char *path)
 ///
 int fs_close(S16FS_t *fs, int fd)
 {
-    if (! fs || fd > _MAX_NUM_OPEN_FILES || fd < 0)
+    if (! fs || fd > _MAX_NUM_OPEN_FILES || fd <= 0)
     {
+        //invalid parameters
         return -1;
     }
 
-    return -1;
+    //////////////////////////////////////////
+    //Find the file descriptor and zero it out
+
+    if (fs->file_descriptors[fd].file_record_index == 0)
+    {
+        //already closed
+        return -2;
+    }
+
+    //clear out
+    fs->file_descriptors[fd].file_record_index = 0;
+    fs->file_descriptors[fd].offset = 0;
+
+    ////////////////
+    //Return success
+
+    return 0;
 }
 
 ///
@@ -912,12 +1030,48 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
 ///
 int fs_remove(S16FS_t *fs, const char *path)
 {
+    /////////////////////
+    //Validate Parameters
+
     if (! fs || ! path)
     {
         return -1;
     }
 
-    return -1;
+    /////////////////////////////////////////
+    //Delete Specified File From File Records
+
+    //find the file
+    uint8_t fileIndex = fs_traverse(fs, path);
+
+    //if directory and the directory is not empty, then report an error
+
+    //free all blocks in the file
+
+    //zero the file record out in the file system
+
+    ///////////////////////////////////////////
+    //Close All File Descriptors for Given File
+
+    //search through in a for loop for indexes == fileIndex and set them to zero to signify a closed file
+
+    ///////////////////////////////////
+    //Remove File from Parent Directory
+
+    //grab the parent directory
+
+    //open directory data block
+
+    //find the file in the parent directory by comparing fileIndex
+
+    //zero out the associated record
+
+    //write block back to directory location
+
+    ////////////////
+    //Signal success
+
+    return 0;
 }
 
 //////////////////
