@@ -15,7 +15,6 @@ typedef struct
 
 //Prototypes
 static void path_destroy(path_t *);
-static void get_block(uint32_t offset);
 
 ///////////////////////
 // Helper Functions ///
@@ -200,9 +199,6 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
     ///////////////////////////////////////
     //Traverse to the block within the file
 
-    //holds the return value
-    int blockBSIndex = 0;
-
     //holds the number of 1024 blocks that need to be passed to arrive at destination
     int fileBlockIndex = fileOffset / 1024; //determine the base location for the fileBlockIndex
 
@@ -222,14 +218,15 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
         uint8_t data[1024];
         int indirectBlockBSIndex = fileRecord->block_refs[6];
 
-        if (! back_store_read(fs->bs, indirectBlockBSIndex, &data)
+        if (! back_store_read(fs->bs, indirectBlockBSIndex, &data))
         {
             //error reading from backing store
-            return -2
+            printf("Failed to read from backing_store in get_block_bs_index.\n");
+            return -2;
         }
 
         //cast data block to readable format
-        uint16_t *directPointers = &data; //512 of these...
+        uint16_t *directPointers = (uint16_t *)data; //512 of these...
 
         //return the address
         return directPointers[directBlockIndex];
@@ -251,7 +248,7 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
             return -3;
         }
 
-        uint16_t *indirectPointers = &data;
+        uint16_t *indirectPointers = (uint16_t *)data;
 
         //now find indirect block
         if (! back_store_read(fs->bs, indirectPointers[indirectBlockIndex], &data))
@@ -260,7 +257,7 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
             return -4;
         }
 
-        uint16_t *directPointers = &data;
+        uint16_t *directPointers = (uint16_t *)data;
 
         //now find direct location
         return directPointers[directBlockIndex];
@@ -941,7 +938,7 @@ int fs_open(S16FS_t *fs, const char *path)
     //find an open file descriptor
     uint8_t fileDescriptorIndex = 0;
 
-    for (uint8_t i = 0; i < _MAX_NUM_OPEN_FILES; ++i)
+    for (uint16_t i = 0; i < _MAX_NUM_OPEN_FILES; ++i)
     {
         if (fs->file_descriptors[i].file_record_index == 0)
         {
@@ -1035,6 +1032,7 @@ int fs_remove(S16FS_t *fs, const char *path)
 
     if (! fs || ! path)
     {
+        printf("Invalid parameters passed to fs_remove.\n");
         return -1;
     }
 
@@ -1045,28 +1043,139 @@ int fs_remove(S16FS_t *fs, const char *path)
     uint8_t fileIndex = fs_traverse(fs, path);
 
     //if directory and the directory is not empty, then report an error
+    file_record_t *fr = &fs->file_records[fileIndex];
 
-    //free all blocks in the file
+    if (fr->type == FS_DIRECTORY)
+    {
+        //pull block
+        directory_t *block;
+
+        if (! back_store_read(fs->bs, fr->block_refs[0], &block))
+        {
+            //error reading from the back store
+            printf("Error: Couldn't read from the back_store.\n");
+            return -2;
+        }
+
+        //look to see if directory is empty
+        for (int i = 0; i < 15; ++i)
+        {
+            if (block->entries[i].file_record_index != 0)
+            {
+                //found a non empty directory!
+                printf("Error: Cannot delete a non-empty directory.\n");
+                return -3;
+            }
+        }
+    }
+
+    //made it this far, so the directory must be empty
+
+    //free all blocks in the file, increment by 1024 to grab one new block per iteration
+    for (uint32_t j = 0; j < fr->metadata.fileSize; j += 1024)
+    {
+        //get the block index associated with the file offset j
+        int bsIndex = get_block_bs_index(fs, fr, j);
+
+        if (bsIndex < 0)
+        {
+            //error occurred getting the block
+            printf("Error occurred getting the block.\n");
+            return -4;
+        }
+
+        //free the block memory
+        back_store_release(fs->bs, bsIndex);
+    }
 
     //zero the file record out in the file system
+    uint8_t zero_mem[128] = {0};
+    memcpy(fr, zero_mem, 128);
 
     ///////////////////////////////////////////
     //Close All File Descriptors for Given File
 
-    //search through in a for loop for indexes == fileIndex and set them to zero to signify a closed file
+    //search through in a for loop for indexes == fileIndex and close
+
+    for (int j = 0; j < _MAX_NUM_OPEN_FILES; ++j)
+    {
+        if (fs->file_descriptors[j].file_record_index == fileIndex)
+        {
+            //found an open file descriptor
+            fs_close(fs, j); //<< Close the file descriptor
+        }
+    }
 
     ///////////////////////////////////
     //Remove File from Parent Directory
 
     //grab the parent directory
+    int parentDirectoryIndex = 0;
+
+    {
+        //remove last slash to find full parent directory path
+
+        char *pathDup = strdup(path);
+        char *parentDirPath;
+        char *c = pathDup;
+        while (*c != '\0')
+            c++;
+        while (*c != '/')
+            c--;
+        *c = '\0';
+        parentDirPath = strdup(pathDup);
+        free(pathDup);
+        parentDirectoryIndex = fs_traverse(fs, parentDirPath);
+        free(parentDirPath);
+    }
 
     //open directory data block
+    uint8_t block[1024] = {0};
 
-    //find the file in the parent directory by comparing fileIndex
+    {
+        file_record_t *pd = &fs->file_records[parentDirectoryIndex];
 
-    //zero out the associated record
+        if (! back_store_read(fs->bs, pd->block_refs[0], &block))
+        {
+            printf("Failed to read from backstore in fs_release.\n");
+            return -5;
+        }
+    }
 
-    //write block back to directory location
+    //search through directory and remove file stub from parent directory
+    {
+        directory_t *dir = (directory_t *)block;
+
+        int i = 0;
+        for ( ; i < 15; ++i)
+        {
+            if (dir->entries[i].file_record_index == fileIndex)
+            {
+                //found the index of the file to delete
+                //zero out entry
+                uint8_t zeroMem[sizeof(directory_entry_t)] = {0}; //create block of zeroed out memory
+                memcpy(&dir->entries[i], zeroMem, sizeof(directory_entry_t));
+
+                //push block to back_store
+                file_record_t *pd = &fs->file_records[parentDirectoryIndex];
+
+                if (! back_store_write(fs->bs, pd->block_refs[0], &block))
+                {
+                    printf("Failed to write directory back to the back_store.\n");
+                    return -6;
+                }
+
+                //done searching
+                break;
+            }
+        }
+
+        if (i == 15)
+        {
+            printf("Failed to find file to remove in parent directory.\n");
+            return -7;
+        }
+    }
 
     ////////////////
     //Signal success
