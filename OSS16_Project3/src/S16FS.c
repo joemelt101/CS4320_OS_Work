@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
 typedef struct
 {
@@ -997,6 +998,23 @@ int fs_close(S16FS_t *fs, int fd)
     return 0;
 }
 
+/**
+    PURPOSE: Runs through a list of bs indexes, deallocating them
+    PARAMETERS:
+        bs: The back_store_t to deallocate from
+        arr: The array of indexes
+        size: The number of indexes in the array
+    RETURNS:
+        Nothing
+**/
+static void deallocate_bs_index_array(back_store_t *bs, int *arr, int size)
+{
+    for (int i = 0; i < size; ++i)
+    {
+        back_store_release(bs, arr[i]);
+    }
+}
+
 ///
 /// Writes data from given buffer to the file linked to the descriptor
 ///   Writing past EOF extends the file
@@ -1010,12 +1028,311 @@ int fs_close(S16FS_t *fs, int fd)
 ///
 ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
 {
+    int totalNumberOfBytesOriginally = nbyte;
+    uint8_t *ptr = src;
+
+    /////////////////////
+    //Validate Parameters
+
     if (! fs || fd < 0 || fd > _MAX_NUM_OPEN_FILES || ! src || nbyte == 0)
     {
+        printf("Invalid parameters passed to fs_write.\n");
         return -1;
     }
 
-    return -1;
+    ////////////////////////////
+    //Write To End of File First
+
+    //get the file from file descriptors
+    FileDes_t *d = &fs->file_descriptors[fd];
+
+    if (d->file_record_index == 0)
+    {
+        printf("File not currently opened!\n");
+        return -2;
+    }
+
+    file_record_t *record = &fs->file_records[d->file_record_index];
+
+    if (record->name[0] == '\0')
+    {
+        printf("Invalid file record detected.\n");
+        return -3;
+    }
+
+    //determine whether necessary to write data to the remainder of the current block where the offset is at
+    if (d->offset % 1024 != 0)
+    {
+        //not at the end of the last written block, so finish block out
+        int lastWrittenBlockIndex = get_block_bs_index(fs, record, d->offset);
+        int startIndexWithinBlock = d->offset % 1024;
+
+        //grab its final block
+        uint8_t block[1024] = {0};
+
+        if (! back_store_read(fs->bs, lastWrittenBlockIndex, block))
+        {
+            printf("Failed to read from back store.\n");
+            return -4;
+        }
+
+        //write to that block's end
+        int numBytesToWrite = 1024 - startIndexWithinBlock;
+        memcpy(block, ptr, numBytesToWrite);
+
+        ptr += numBytesToWrite; //keep it moving forward
+
+        //push block back to backing_store
+        if (! back_store_write(fs->bs, lastWrittenBlockIndex, block))
+        {
+            printf("Failed to write to back store.\n");
+            return -5;
+        }
+
+        //update num bytes left
+        nbyte -= numBytesToWrite;
+        d->offset += numBytesToWrite;
+    }
+
+
+    //now write until the end of the current file size
+    while (d->offset < record->metadata.fileSize && nbyte > 0)
+    {
+        uint8_t block[1024] = {0};
+        int bsBlockIndex = get_block_bs_index(fs, record, d->offset);
+
+        if (bsBlockIndex < 0)
+        {
+            printf("Failed find bsBlockIndex.\n");
+            return -10;
+        }
+
+        if (nbyte > 1024)
+        {
+            if (! back_store_write(fs->bs, bsBlockIndex, ptr))
+            {
+                printf("Failed to read from back_store.\n");
+                return -11;
+            }
+
+            nbyte -= 1024;
+            ptr += 1024;
+            d->offset += 1024;
+        }
+        else
+        {
+            memcpy(block, ptr, nbyte);
+            ptr += nbyte;
+
+            if (! back_store_write(fs->bs, bsBlockIndex, block))
+            {
+                printf("Failed write block to back store.\n");
+                return -12;
+            }
+
+            nbyte = 0;
+            d->offset += nbyte;
+
+            //no more data to write so return
+            return totalNumberOfBytesOriginally;
+        }
+    }
+
+    ///////////////////////////////
+    //Allocate Needed Memory Blocks
+
+    //allocate all remaining blocks needed
+
+    //calculate number of needed blocks based on remaining bytes
+    int numNeededDataBlocks = ceil((float)nbyte / (float)1024);
+
+    //calculate number of needed file blocks
+    int needIndirectBlock = 0;
+    int numCurrentBlocks = d->offset / 1024;
+    int numBlocksNeededTotal = numCurrentBlocks + numNeededDataBlocks;
+
+    //if currently in D range and need to move to ID range
+    if (numCurrentBlocks < 7 && numBlocksNeededTotal >= 7)
+    {
+        //need to allocate an indirect block
+        needIndirectBlock = 1;
+    }
+
+    int needDoubleIndirectBlock = 0;
+
+    //if currently in ID range and need to move to DID range
+    if (numCurrentBlocks < 518 && numBlocksNeededTotal >= 518)
+    {
+        //need a double indirect block
+        needDoubleIndirectBlock = 1;
+    }
+
+    int numIDNeededForDIDRange = 0; //subtract 518 to remove blocks covered in direct and indirect ranges
+
+    if (numBlocksNeededTotal >= 519)
+    {
+        //need to consider addition DID blocks
+        //if in DID range, determine how many indirect files needed
+        //determine number of indirect blocks needed in the DID range
+        int totalIDNeededForDIDRange = (numBlocksNeededTotal - 518) / 512; //remove blocks covered by D and ID sections
+
+        if (numCurrentBlocks > 518)
+        {
+            //need to remove current ID's already allocated
+            int currentNumIDNeededForDIDRange = (numCurrentBlocks - 518) / 512;
+            numIDNeededForDIDRange = totalIDNeededForDIDRange - currentNumIDNeededForDIDRange;
+        }
+    }
+
+    //allocate each file block, storing its location
+    int numFileBlocksNeeded = needDoubleIndirectBlock + needDoubleIndirectBlock + numIDNeededForDIDRange;
+    int *fileBlocks = (int *)malloc(sizeof(int) * numFileBlocksNeeded);
+
+    //attempt to allocate the file blocks
+    for (int i = 0; i < numFileBlocksNeeded; ++i)
+    {
+        fileBlocks[i] = back_store_allocate(fs->bs);
+
+        if (fileBlocks[i] == 0)
+        {
+            printf("Failed to allocate memory from the backing store.\n");
+            deallocate_bs_index_array(fs->bs, fileBlocks, i - 1); //go to i - 1 because not all blocks have been allocated
+            free(fileBlocks);
+            return -40;
+        }
+    }
+
+    //create an array of the proper size
+    int* newDataBlockIndexes = (int *)malloc(sizeof(int) * numNeededDataBlocks);
+
+    if (! newDataBlockIndexes)
+    {
+        printf("Ran out of memory for making block id array.\n");
+        return -6;
+    }
+
+    //allocate each data block, storing its location
+    for (int i = 0; i < numNeededDataBlocks; ++i)
+    {
+        newDataBlockIndexes[i] = back_store_allocate(fs->bs);
+
+        if (newDataBlockIndexes[i] == 0)
+        {
+            //back_store failed to allocate memory
+            printf("Failed to allocate enough memory from the back_store.\n");
+            deallocate_bs_index_array(fs->bs, fileBlocks, numFileBlocksNeeded);
+            deallocate_bs_index_array(fs->bs, newDataBlockIndexes, i - 1); //not all of them have been allocated yet...
+            free(newDataBlockIndexes);
+            free(fileBlocks);
+            return -7;
+        }
+    }
+
+    //////////////////////////////////////////////
+    //Setup FileSystem Data Framework (ID and DID)
+
+
+
+    ////////////////////////////////////////////
+    //Write Remaining Data to Blocks, one by one
+
+    uint8_t block[1024] = {0};
+
+    for (int i = 0; i < numNeededDataBlocks; ++i)
+    {
+        if (! back_store_read(fs->bs, newDataBlockIndexes[i], block))
+        {
+            printf("Failed to read from the backing_store!\n");
+            deallocate_bs_index_array(fs->bs, arr, numNeededDataBlocks)
+            free(newDataBlockIndexes);
+            return -8;
+        }
+
+        if (nbyte > 1024)
+        {
+            //write entire block
+            memcpy(block, src, 1024);
+            nbyte -= 1024;
+        }
+        else
+        {
+            //write what's left
+            memcpy(block, src, nbyte);
+            nbyte = 0;
+        }
+    }
+
+    ////////////////////////////
+    //Link New Blocks up to File
+
+    //grab the file from the file descriptors
+    //stored in record ^^^
+
+    //TODO: Figure out how to allocate blocks for direct and indirect
+    int currentNumBlocks = record->metadata.fileSize / 1024;
+
+    //calculate number of data blocks needed
+    int currentBlockIndex = record->metadata.fileSize / 1024; //add one to get to first non-used block
+
+    for (int i = 0; i < numNeededDataBlocks; ++i)
+    {
+        //link it up to the next location in the file
+        if (currentBlockIndex < 6)
+        {
+            //in fast portion of file system
+            record->block_refs[currentBlockIndex] = arr[i]; //simple, just copy value
+        }
+        else if (currentBlockIndex <= 517)
+        {
+            //indirect
+            //more difficult...
+            int blockOfDirectLinksIndex = currentBlockIndex - 6;
+
+            //grab block of direct links
+            if (! back_store_read(fs->bs, record->block_refs[6], block))
+            {
+                printf("Failed to read in block of direct links from back_store.\n");
+                deallocate_bs_index_array(fs, newDataBlockIndexes, numNeededDataBlocks);
+                free(newDataBlockIndexes);
+                return -31;
+            }
+
+            uint16_t *directLinks = (uint16_t *)block;
+            directLinks[blockOfDirectLinksIndex] = arr[i];
+        }
+        else if (currentBlockIndex <= 262661)
+        {
+            //double indirect
+            int indirectBlockIndex = (fileBlockIndex - 518) / 512; //subtract 518 to remove direct and indirect block locations and divide by 516 to ensure proper one received
+            int directBlockIndex = (fileBlockIndex - 518) % 512;
+            currentBlockIndex -= 518;
+
+            //TODO: Finish this area
+        }
+        else
+        {
+            printf("Here be where devils play.\n");
+            return -30;
+        }
+
+        currentBlockIndex++; //do the next block linkage
+    }
+
+    ////////////////////////////
+    //Adjust Filesystem Metadata
+
+    record->metadata.fileSize += numNeededBlocks * 1024; //include actual file size
+    d->offset ++ totalNumberOfBytesOriginally;
+
+    /////////////
+    //Free Memory
+
+    free(newDataBlockIndexes);
+
+    ////////////////////////////////
+    //Return number of bytes written
+
+    return totalNumberOfBytesOriginally;
 }
 
 ///
