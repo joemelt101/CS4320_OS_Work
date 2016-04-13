@@ -1171,15 +1171,14 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
 
     if (numBlocksNeededTotal >= 519)
     {
-        //need to consider addition DID blocks
-        //if in DID range, determine how many indirect files needed
-        //determine number of indirect blocks needed in the DID range
-        int totalIDNeededForDIDRange = (numBlocksNeededTotal - 518) / 512; //remove blocks covered by D and ID sections
+        //need to consider additional ID blocks in tbe DID block
+        //total - current = needed ID blocks
+        int totalIDNeededForDIDRange = ceil((float)(numBlocksNeededTotal - 518) / (float)512); //remove blocks covered by D and ID sections
 
         if (numCurrentBlocks > 518)
         {
             //need to remove current ID's already allocated
-            int currentNumIDNeededForDIDRange = (numCurrentBlocks - 518) / 512;
+            int currentNumIDNeededForDIDRange = ceil((float)numCurrentBlocks - 518 / (float)512);
             numIDNeededForDIDRange = totalIDNeededForDIDRange - currentNumIDNeededForDIDRange;
         }
     }
@@ -1230,8 +1229,61 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
 
     //////////////////////////////////////////////
     //Setup FileSystem Data Framework (ID and DID)
+    {
+        //hold a current location index
+        int i = 0;
 
+        //allocate ID
+        if (needIndirectBlock)
+        {
+            record->block_refs[6] = fileBlocks[i++];
+        }
 
+        //allocate DID
+        if (needDoubleIndirectBlock)
+        {
+            record->block_refs[7] = fileBlocks[i++];
+        }
+
+        //allocate ID's in DID
+        if (numIDNeededForDIDRange > 0)
+        {
+            //open data block
+            uint16_t IDBlock[512] = {0};
+
+            if (! back_store_read(fs->bs, record->block_refs[7], IDBlock))
+            {
+                printf("Failed to read data for ID blocks from a file's given DID block index.\n");
+                deallocate_bs_index_array(fs->bs, fileBlocks[i], numFileBlocksNeeded - i); //free up to what has not been assigned
+                free(fileBlocks);
+
+                deallocate_bs_index_array(fs->bs, newDataBlockIndexes, numNeededDataBlocks);
+                free(newDataBlockIndexes);
+                return -50;
+            }
+
+            //find start of non-allocated numbers
+            int j = 0;
+
+            for ( ; j < 512; ++j)
+            {
+                if (IDBlock[j] == 0)
+                {
+                    //found it!
+                    IDBlock[j] = fileBlocks[i++];
+                }
+
+                if (i == numIDNeededForDIDRange)
+                {
+                    //already allocated all of the needed slots
+                    break;
+                }
+            }
+        }
+
+        //free file system array
+        free(fileBlocks);
+    }
 
     ////////////////////////////////////////////
     //Write Remaining Data to Blocks, one by one
@@ -1243,7 +1295,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
         if (! back_store_read(fs->bs, newDataBlockIndexes[i], block))
         {
             printf("Failed to read from the backing_store!\n");
-            deallocate_bs_index_array(fs->bs, arr, numNeededDataBlocks)
+            deallocate_bs_index_array(fs->bs, newDataBlockIndexes, numNeededDataBlocks)
             free(newDataBlockIndexes);
             return -8;
         }
@@ -1280,7 +1332,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
         if (currentBlockIndex < 6)
         {
             //in fast portion of file system
-            record->block_refs[currentBlockIndex] = arr[i]; //simple, just copy value
+            record->block_refs[currentBlockIndex] = newDataBlockIndexes[i]; //simple, just copy value
         }
         else if (currentBlockIndex <= 517)
         {
@@ -1298,7 +1350,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
             }
 
             uint16_t *directLinks = (uint16_t *)block;
-            directLinks[blockOfDirectLinksIndex] = arr[i];
+            directLinks[blockOfDirectLinksIndex] = newDataBlockIndexes[i];
         }
         else if (currentBlockIndex <= 262661)
         {
@@ -1308,10 +1360,35 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
             currentBlockIndex -= 518;
 
             //TODO: Finish this area
+            if (! back_store_read(fs->bs, record->block_refs[7], block))
+            {
+                printf("Failed to read in block of indirect links from back_store.\n");
+                deallocate_bs_index_array(fs, newDataBlockIndexes, numNeededDataBlocks);
+                free(newDataBlockIndexes);
+                return -32;
+            }
+
+            //grab indirect links
+            uint16_t *doubleIndirectLinks = (uint16_t *)block;
+
+            //figure out indirect link from double indirect and load block of direct links
+            if (! back_store_read(fs->bs, doubleIndirectLinks[indirectBlockIndex], block))
+            {
+                printf("Failed to read in block of indirect links from back_store.\n");
+                deallocate_bs_index_array(fs, newDataBlockIndexes, numNeededDataBlocks);
+                free(newDataBlockIndexes);
+                return -32;
+            }
+
+            //figure out direct link from indirect
+            uint16_t *directLinks = (uint16_t *)block;
+            directLinks[directBlockIndex] = newDataBlockIndexes[i]; //found the link, so set it to the proper location
         }
         else
         {
-            printf("Here be where devils play.\n");
+            printf("Whelp. This sucks.\n");
+            deallocate_bs_index_array(fs, newDataBlockIndexes, numNeededDataBlocks);
+            free(newDataBlockIndexes);
             return -30;
         }
 
