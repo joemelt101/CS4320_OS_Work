@@ -907,6 +907,8 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
 ///
 int fs_open(S16FS_t *fs, const char *path)
 {
+    printf("fs_open called: %s\n", path);
+
     if (! fs || ! path)
     {
         return -1;
@@ -921,6 +923,7 @@ int fs_open(S16FS_t *fs, const char *path)
     if (fileIndex == -1)
     {
         //error finding the file / directory -- must not exist or be an invalid parameter
+        printf("Couldn't find file: %s.\n", path);
         return -2;
     }
 
@@ -930,6 +933,7 @@ int fs_open(S16FS_t *fs, const char *path)
     if (fileRecord->type != FS_REGULAR)
     {
         //Entered path is not a regular file type. May be a directory or an invalid type.
+        printf("%s cannot be opened because it is a directory\n.", path);
         return -3;
     }
 
@@ -937,31 +941,37 @@ int fs_open(S16FS_t *fs, const char *path)
     //Create "new" file descriptor
 
     //find an open file descriptor
-    uint8_t fileDescriptorIndex = 0;
+    int fileDescriptorIndex = -1;
 
+    //start at one as to not override the root
     for (uint16_t i = 0; i < _MAX_NUM_OPEN_FILES; ++i)
     {
+        //if pointing to the root directory, it is an open location
         if (fs->file_descriptors[i].file_record_index == 0)
         {
+            printf("Found unused file descriptor at index %d.\n", i);
             //root used as a way of showing open file descriptors
             //0 means it's open
             //place information inside
+            printf("Formatting file....\n");
             FileDes_t *fd = &fs->file_descriptors[i];
             fd->offset = 0;
             fd->file_record_index = fileIndex;
-            fileDescriptorIndex = fileIndex;
+            fileDescriptorIndex = i;
+            break;
         }
     }
 
-    if (fileDescriptorIndex == 0)
+    if (fileDescriptorIndex == -1)
     {
         //couldn't find an open descriptor
+        printf("Error: Could not find an open file descriptor.\n");
         return -4;
     }
 
     /////////////////////////////////////
     //Return the file descriptor location
-
+    printf("Open Succeeded: descriptor index = %d.\n", fileDescriptorIndex);
     return fileDescriptorIndex;
 }
 
@@ -973,9 +983,16 @@ int fs_open(S16FS_t *fs, const char *path)
 ///
 int fs_close(S16FS_t *fs, int fd)
 {
-    if (! fs || fd > _MAX_NUM_OPEN_FILES || fd <= 0)
+    printf("fs_close called. ID: %d \n", fd);
+
+    if (! fs || fd > _MAX_NUM_OPEN_FILES || fd < 0)
     {
         //invalid parameters
+        if (! fs)
+        {
+            printf("fs is null and ");
+        }
+        printf("Error: Invalid Parameters: fd = %d.\n", fd);
         return -1;
     }
 
@@ -985,6 +1002,7 @@ int fs_close(S16FS_t *fs, int fd)
     if (fs->file_descriptors[fd].file_record_index == 0)
     {
         //already closed
+        printf("Error: File descriptor already closed.\n");
         return -2;
     }
 
@@ -995,6 +1013,7 @@ int fs_close(S16FS_t *fs, int fd)
     ////////////////
     //Return success
 
+    printf("fs_close succeeded.\n");
     return 0;
 }
 
@@ -1028,6 +1047,7 @@ static void deallocate_bs_index_array(back_store_t *bs, int *arr, int size)
 ///
 ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
 {
+
     int totalNumberOfBytesOriginally = nbyte;
     uint8_t *ptr = (uint8_t *)src;
 
