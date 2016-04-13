@@ -1029,7 +1029,7 @@ static void deallocate_bs_index_array(back_store_t *bs, int *arr, int size)
 ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
 {
     int totalNumberOfBytesOriginally = nbyte;
-    uint8_t *ptr = src;
+    uint8_t *ptr = (uint8_t *)src;
 
     /////////////////////
     //Validate Parameters
@@ -1202,7 +1202,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
     }
 
     //create an array of the proper size
-    int* newDataBlockIndexes = (int *)malloc(sizeof(int) * numNeededDataBlocks);
+    int *newDataBlockIndexes = (int *)malloc(sizeof(int) * numNeededDataBlocks);
 
     if (! newDataBlockIndexes)
     {
@@ -1254,7 +1254,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
             if (! back_store_read(fs->bs, record->block_refs[7], IDBlock))
             {
                 printf("Failed to read data for ID blocks from a file's given DID block index.\n");
-                deallocate_bs_index_array(fs->bs, fileBlocks[i], numFileBlocksNeeded - i); //free up to what has not been assigned
+                deallocate_bs_index_array(fs->bs, &fileBlocks[i], numFileBlocksNeeded - i); //free up to what has not been assigned
                 free(fileBlocks);
 
                 deallocate_bs_index_array(fs->bs, newDataBlockIndexes, numNeededDataBlocks);
@@ -1295,7 +1295,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
         if (! back_store_read(fs->bs, newDataBlockIndexes[i], block))
         {
             printf("Failed to read from the backing_store!\n");
-            deallocate_bs_index_array(fs->bs, newDataBlockIndexes, numNeededDataBlocks)
+            deallocate_bs_index_array(fs->bs, newDataBlockIndexes, numNeededDataBlocks);
             free(newDataBlockIndexes);
             return -8;
         }
@@ -1320,10 +1320,8 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
     //grab the file from the file descriptors
     //stored in record ^^^
 
-    //TODO: Figure out how to allocate blocks for direct and indirect
-    int currentNumBlocks = record->metadata.fileSize / 1024;
-
     //calculate number of data blocks needed
+    //TODO: Fix
     int currentBlockIndex = record->metadata.fileSize / 1024; //add one to get to first non-used block
 
     for (int i = 0; i < numNeededDataBlocks; ++i)
@@ -1344,7 +1342,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
             if (! back_store_read(fs->bs, record->block_refs[6], block))
             {
                 printf("Failed to read in block of direct links from back_store.\n");
-                deallocate_bs_index_array(fs, newDataBlockIndexes, numNeededDataBlocks);
+                deallocate_bs_index_array(fs->bs, newDataBlockIndexes, numNeededDataBlocks);
                 free(newDataBlockIndexes);
                 return -31;
             }
@@ -1355,15 +1353,14 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
         else if (currentBlockIndex <= 262661)
         {
             //double indirect
-            int indirectBlockIndex = (fileBlockIndex - 518) / 512; //subtract 518 to remove direct and indirect block locations and divide by 516 to ensure proper one received
-            int directBlockIndex = (fileBlockIndex - 518) % 512;
+            int indirectBlockIndex = (currentBlockIndex - 518) / 512; //subtract 518 to remove direct and indirect block locations and divide by 512 to ensure proper one received
+            int directBlockIndex = (currentBlockIndex - 518) % 512;
             currentBlockIndex -= 518;
 
-            //TODO: Finish this area
             if (! back_store_read(fs->bs, record->block_refs[7], block))
             {
                 printf("Failed to read in block of indirect links from back_store.\n");
-                deallocate_bs_index_array(fs, newDataBlockIndexes, numNeededDataBlocks);
+                deallocate_bs_index_array(fs->bs, newDataBlockIndexes, numNeededDataBlocks);
                 free(newDataBlockIndexes);
                 return -32;
             }
@@ -1375,7 +1372,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
             if (! back_store_read(fs->bs, doubleIndirectLinks[indirectBlockIndex], block))
             {
                 printf("Failed to read in block of indirect links from back_store.\n");
-                deallocate_bs_index_array(fs, newDataBlockIndexes, numNeededDataBlocks);
+                deallocate_bs_index_array(fs->bs, newDataBlockIndexes, numNeededDataBlocks);
                 free(newDataBlockIndexes);
                 return -32;
             }
@@ -1387,7 +1384,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
         else
         {
             printf("Whelp. This sucks.\n");
-            deallocate_bs_index_array(fs, newDataBlockIndexes, numNeededDataBlocks);
+            deallocate_bs_index_array(fs->bs, newDataBlockIndexes, numNeededDataBlocks);
             free(newDataBlockIndexes);
             return -30;
         }
@@ -1398,8 +1395,8 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
     ////////////////////////////
     //Adjust Filesystem Metadata
 
-    record->metadata.fileSize += numNeededBlocks * 1024; //include actual file size
-    d->offset ++ totalNumberOfBytesOriginally;
+    record->metadata.fileSize += numNeededDataBlocks * 1024; //include actual file size
+    d->offset += totalNumberOfBytesOriginally;
 
     /////////////
     //Free Memory
