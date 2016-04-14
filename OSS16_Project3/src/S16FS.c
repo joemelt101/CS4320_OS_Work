@@ -191,7 +191,7 @@ static void path_destroy(path_t* path)
 **/
 static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t fileBlockIndex)
 {
-    if (! fileRecord || fileOffset >= fileRecord->metadata.fileSize)
+    if (! fileRecord)
     {
         //invalid parameters
         return -1;
@@ -342,7 +342,7 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
 
             if (! back_store_write(fs->bs, res, directPointers))
             {
-                printf("Failed to write D in DI in DID.\n"0);
+                printf("Failed to write D in DI in DID.\n");
                 return -9;
             }
         }
@@ -1110,31 +1110,14 @@ int fs_close(S16FS_t *fs, int fd)
     RETURNS:
         Nothing
 **/
+/*
 static void deallocate_bs_index_array(back_store_t *bs, int *arr, int size)
 {
     for (int i = 0; i < size; ++i)
     {
         back_store_release(bs, arr[i]);
     }
-}
-
-/**
-    PURPOSE: Returns an allocated file
-    PARAMETERS:
-        file: The file to retrieve the associated BS block index from
-        fileBlockIndex: The index to retrieve or allocate
-    RETURNS:
-        A BS index to the associated file block index
-**/
-int get_or_alloc_file_block(file_record_t *file, int fileBlockIndex)
-{
-    if (! file)
-    {
-        return -1;
-    }
-
-
-}
+} */
 
 ///
 /// Writes data from given buffer to the file linked to the descriptor
@@ -1188,7 +1171,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
     if (d->offset % 1024 != 0)
     {
         //not at the end of the last written block, so finish block out
-        int lastWrittenBlockIndex = get_block_bs_index(fs, record, d->offset);
+        int lastWrittenBlockIndex = get_block_bs_index(fs, record, d->offset / 1024);
         int startIndexWithinBlock = d->offset % 1024;
 
         //grab its final block
@@ -1219,19 +1202,49 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
     }
 
     //now write blocks one by one to file
+    int fileBlockIndex = d->offset / 1024 + 1;
+
     while (nbyte > 0)
     {
+        int nextID = get_block_bs_index(fs, record, fileBlockIndex++);
+
+        if (nextID < 0)
+        {
+            //couldn't allocate any more
+            printf("Failed to allocate another block.\n");
+            printf("Bytes written: %d\n", totalNumberOfBytesOriginally);
+            return totalNumberOfBytesOriginally - nbyte;
+        }
+
         if (nbyte >= 1024)
         {
             //write an entire block
+            if (! back_store_write(fs->bs, nextID, ptr))
+            {
+                printf("Write to the back_store failed.\n");
+                return -1;
+            }
+
+            ptr += 1024;
+            nbyte -= 1024;
         }
         else
         {
             //write what's left
+            uint8_t block[1024] = {0};
+            memcpy(block, ptr, nbyte);
+
+            if (! back_store_write(fs->bs, nextID, ptr))
+            {
+                printf("Failed to write last part to BS.\n");
+                return -1;
+            }
+
+            nbyte = 0;
         }
     }
 
-    return 0;
+    return totalNumberOfBytesOriginally;
 
     /*
     int totalNumberOfBytesOriginally = nbyte;
