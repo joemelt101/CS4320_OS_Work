@@ -180,16 +180,16 @@ static void path_destroy(path_t* path)
 
 /**
     PURPOSE:
-        Returns a block id for a given file offset
+        Returns a block id for a given file offset, allocates if necessary
     PARAMETERS:
         fs: A pointer to the file system object
         file: A pointer to the file record
-        offset: A zero based index to the byte within the file to retrieve the block index for
+        fileBlockIndex: The file (block) offset to use to retrieve a block
     RETURNS:
         Success: An integer containing the backing store block id associated with the provided offset and file record
         Failure: A negative integer
 **/
-static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t fileOffset)
+static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t fileBlockIndex)
 {
     if (! fileRecord || fileOffset >= fileRecord->metadata.fileSize)
     {
@@ -200,9 +200,6 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
     ///////////////////////////////////////
     //Traverse to the block within the file
 
-    //holds the number of 1024 blocks that need to be passed to arrive at destination
-    int fileBlockIndex = fileOffset / 1024; //determine the base location for the fileBlockIndex
-
     if (fileBlockIndex < 6) //if within index of 6
     {
         //in a direct block, easy to return
@@ -211,6 +208,22 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
     else if (fileBlockIndex <= 517) //if between [6, 517]
     {
         //in an indirect block
+
+        //if indirect block doesn't exist, add it
+        if (fileRecord->block_refs[6] == 0)
+        {
+            int res = back_store_allocate(fs->bs);
+
+            if (res == 0)
+            {
+                //failed to allocate location
+                printf("Failed to allocate file block.\n");
+                return -1;
+            }
+
+            //file block successfully allocated
+            fileRecord->block_refs[6] = res;
+        }
 
         //calculate which indirect block is needed
         int directBlockIndex = fileBlockIndex - 6; //subtract 6 to remove direct blocks passed over
@@ -229,11 +242,45 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
         //cast data block to readable format
         uint16_t *directPointers = (uint16_t *)data; //512 of these...
 
+        if (directPointers[directBlockIndex] == 0)
+        {
+            //need to allocate block in ID block and push to backing store.
+            int res = back_store_allocate(fs->bs);
+
+            if (res == 0)
+            {
+                printf("Failed to allocate.\n");
+                return -3;
+            }
+
+            directPointers[directBlockIndex] = res;
+
+            if (! back_store_write(fs->bs, res, directPointers)) //update direct pointers
+            {
+                printf("Failed to write direct pointers back to back_store.\n");
+                return -4;
+            }
+        }
+
         //return the address
         return directPointers[directBlockIndex];
     }
     else if (fileBlockIndex <= 262661) // should be [518->262,661]
     {
+        if (fileRecord->block_refs[7] == 0)
+        {
+            //need to allocate DID block
+            int res = back_store_allocate(fs->bs);
+
+            if (res == 0)
+            {
+                printf("Failed to allocated DID block.\n");
+                return -5;
+            }
+
+            fileRecord->block_refs[7] = res;
+        }
+
         //in a double indirect block
         int indirectBlockIndex = (fileBlockIndex - 518) / 512; //subtract 518 to remove direct and indirect block locations and divide by 516 to ensure proper one received
         int directBlockIndex = (fileBlockIndex - 518) % 512;
@@ -246,19 +293,59 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
         if (! back_store_read(fs->bs, doubleIndirectBlockBSIndex, &data))
         {
             //failed to read data from BS
+            printf("Failed to read DID from BS.\n");
             return -3;
         }
 
         uint16_t *indirectPointers = (uint16_t *)data;
 
+        if (indirectPointers[indirectBlockIndex] == 0)
+        {
+            //need to allocate a block here
+            int res = back_store_allocate(fs->bs);
+
+            if (res == 0)
+            {
+                printf("Failed to allocate ID inside of DID.\n");
+                return -6;
+            }
+
+            indirectPointers[indirectBlockIndex] = res;
+
+            if (! back_store_write(fs->bs, res, indirectPointers))
+            {
+                printf("Failed to write ID inside of DID.\n");
+                return -7;
+            }
+        }
+
         //now find indirect block
         if (! back_store_read(fs->bs, indirectPointers[indirectBlockIndex], &data))
         {
             //failed to read from BS
+            printf("Failed to read from backing store.\n");
             return -4;
         }
 
         uint16_t *directPointers = (uint16_t *)data;
+
+        if (directPointers[directBlockIndex] == 0)
+        {
+            //need to allocate a block here
+            int res = back_store_allocate(fs->bs);
+
+            if (res == 0)
+            {
+                printf("Failed to create D in DI in DID.\n");
+                return -8;
+            }
+
+            if (! back_store_write(fs->bs, res, directPointers))
+            {
+                printf("Failed to write D in DI in DID.\n"0);
+                return -9;
+            }
+        }
 
         //now find direct location
         return directPointers[directBlockIndex];
@@ -907,10 +994,9 @@ int fs_create(S16FS_t *fs, const char *path, file_t type)
 ///
 int fs_open(S16FS_t *fs, const char *path)
 {
-    printf("fs_open called: %s\n", path);
-
     if (! fs || ! path)
     {
+        printf("fs_open error: null fs or path passed....\n");
         return -1;
     }
 
@@ -949,11 +1035,9 @@ int fs_open(S16FS_t *fs, const char *path)
         //if pointing to the root directory, it is an open location
         if (fs->file_descriptors[i].file_record_index == 0)
         {
-            printf("Found unused file descriptor at index %d.\n", i);
             //root used as a way of showing open file descriptors
             //0 means it's open
             //place information inside
-            printf("Formatting file....\n");
             FileDes_t *fd = &fs->file_descriptors[i];
             fd->offset = 0;
             fd->file_record_index = fileIndex;
@@ -971,7 +1055,7 @@ int fs_open(S16FS_t *fs, const char *path)
 
     /////////////////////////////////////
     //Return the file descriptor location
-    printf("Open Succeeded: descriptor index = %d.\n", fileDescriptorIndex);
+    printf("fs_open: %s opened at %d.\n", path, fileDescriptorIndex);
     return fileDescriptorIndex;
 }
 
@@ -1034,6 +1118,24 @@ static void deallocate_bs_index_array(back_store_t *bs, int *arr, int size)
     }
 }
 
+/**
+    PURPOSE: Returns an allocated file
+    PARAMETERS:
+        file: The file to retrieve the associated BS block index from
+        fileBlockIndex: The index to retrieve or allocate
+    RETURNS:
+        A BS index to the associated file block index
+**/
+int get_or_alloc_file_block(file_record_t *file, int fileBlockIndex)
+{
+    if (! file)
+    {
+        return -1;
+    }
+
+
+}
+
 ///
 /// Writes data from given buffer to the file linked to the descriptor
 ///   Writing past EOF extends the file
@@ -1047,18 +1149,104 @@ static void deallocate_bs_index_array(back_store_t *bs, int *arr, int size)
 ///
 ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
 {
-
+    //write to end of current block
     int totalNumberOfBytesOriginally = nbyte;
     uint8_t *ptr = (uint8_t *)src;
 
     /////////////////////
     //Validate Parameters
 
-    if (! fs || fd < 0 || fd > _MAX_NUM_OPEN_FILES || ! src || nbyte == 0)
+    if (! fs || fd < 0 || fd >= _MAX_NUM_OPEN_FILES || ! src)
     {
         printf("Invalid parameters passed to fs_write.\n");
         return -1;
     }
+
+    printf("fs_write called with fs: %p, fd: %d, src: %p, nbyte: %d.\n", fs, fd, src, nbyte);
+
+    ////////////////////////////
+    //Write To End of File First
+
+    //get the file from file descriptors
+    FileDes_t *d = &fs->file_descriptors[fd];
+
+    if (d->file_record_index == 0)
+    {
+        printf("File not currently opened!\n");
+        return -2;
+    }
+
+    file_record_t *record = &fs->file_records[d->file_record_index];
+
+    if (record->name[0] == '\0')
+    {
+        printf("Invalid file record detected.\n");
+        return -3;
+    }
+
+    //determine whether necessary to write data to the remainder of the current block where the offset is at
+    if (d->offset % 1024 != 0)
+    {
+        //not at the end of the last written block, so finish block out
+        int lastWrittenBlockIndex = get_block_bs_index(fs, record, d->offset);
+        int startIndexWithinBlock = d->offset % 1024;
+
+        //grab its final block
+        uint8_t block[1024] = {0};
+
+        if (! back_store_read(fs->bs, lastWrittenBlockIndex, block))
+        {
+            printf("Failed to read from back store.\n");
+            return -4;
+        }
+
+        //write to that block's end
+        int numBytesToWrite = 1024 - startIndexWithinBlock;
+        memcpy(block, ptr, numBytesToWrite);
+
+        ptr += numBytesToWrite; //keep it moving forward
+
+        //push block back to backing_store
+        if (! back_store_write(fs->bs, lastWrittenBlockIndex, block))
+        {
+            printf("Failed to write to back store.\n");
+            return -5;
+        }
+
+        //update num bytes left
+        nbyte -= numBytesToWrite;
+        d->offset += numBytesToWrite;
+    }
+
+    //now write blocks one by one to file
+    while (nbyte > 0)
+    {
+        if (nbyte >= 1024)
+        {
+            //write an entire block
+        }
+        else
+        {
+            //write what's left
+        }
+    }
+
+    return 0;
+
+    /*
+    int totalNumberOfBytesOriginally = nbyte;
+    uint8_t *ptr = (uint8_t *)src;
+
+    /////////////////////
+    //Validate Parameters
+
+    if (! fs || fd < 0 || fd >= _MAX_NUM_OPEN_FILES || ! src)
+    {
+        printf("Invalid parameters passed to fs_write.\n");
+        return -1;
+    }
+
+    printf("fs_write called with fs: %p, fd: %d, src: %p, nbyte: %d.\n", fs, fd, src, nbyte);
 
     ////////////////////////////
     //Write To End of File First
@@ -1427,6 +1615,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
     //Return number of bytes written
 
     return totalNumberOfBytesOriginally;
+    */
 }
 
 ///

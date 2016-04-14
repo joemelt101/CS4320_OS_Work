@@ -482,7 +482,6 @@ TEST(c_tests, open_close_file) {
     13. Error, bad fd
 */
 
-/*
 TEST(d_tests, write_file_simple) {
     vector<const char *> fnames{"/file_a", "/file_b", "/file_c", "/file_d"};
 
@@ -590,7 +589,6 @@ TEST(d_tests, write_file_simple) {
 
     fs_unmount(fs);
 }
-*/
 
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
