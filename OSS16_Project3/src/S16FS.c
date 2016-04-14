@@ -202,6 +202,20 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
 
     if (fileBlockIndex < 6) //if within index of 6
     {
+        //if need to allocate, then do so
+        if (fileRecord->block_refs[fileBlockIndex] == 0)
+        {
+            int res = back_store_allocate(fs->bs);
+
+            if (res == 0)
+            {
+                printf("Failed to allocate file block.\n");
+                return -10;
+            }
+
+            fileRecord->block_refs[fileBlockIndex] = res;
+        }
+
         //in a direct block, easy to return
         return fileRecord->block_refs[fileBlockIndex];
     }
@@ -267,6 +281,8 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
     }
     else if (fileBlockIndex <= 262661) // should be [518->262,661]
     {
+        printf("DID Zone!!!\n");
+
         if (fileRecord->block_refs[7] == 0)
         {
             //need to allocate DID block
@@ -312,12 +328,14 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
 
             indirectPointers[indirectBlockIndex] = res;
 
-            if (! back_store_write(fs->bs, res, indirectPointers))
+            if (! back_store_write(fs->bs, fileRecord->block_refs[7], indirectPointers))
             {
                 printf("Failed to write ID inside of DID.\n");
                 return -7;
             }
         }
+
+        int readFrom = indirectPointers[indirectBlockIndex];
 
         //now find indirect block
         if (! back_store_read(fs->bs, indirectPointers[indirectBlockIndex], &data))
@@ -340,8 +358,11 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
                 return -8;
             }
 
-            if (! back_store_write(fs->bs, res, directPointers))
+            directPointers[directBlockIndex] = res;
+
+            if (! back_store_write(fs->bs, readFrom, directPointers))
             {
+                printf("Attempted location: %d\n", indirectPointers[indirectBlockIndex]);
                 printf("Failed to write D in DI in DID.\n");
                 return -9;
             }
@@ -350,7 +371,6 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
         //now find direct location
         return directPointers[directBlockIndex];
     }
-
 
     return -5; //out of bounds
 }
@@ -1139,6 +1159,11 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
     /////////////////////
     //Validate Parameters
 
+    if (nbyte == 0)
+    {
+        return 0;
+    }
+
     if (! fs || fd < 0 || fd >= _MAX_NUM_OPEN_FILES || ! src)
     {
         printf("Invalid parameters passed to fs_write.\n");
@@ -1159,6 +1184,8 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
         return -2;
     }
 
+    printf("Starting offset: %d.\n", d->offset);
+
     file_record_t *record = &fs->file_records[d->file_record_index];
 
     if (record->name[0] == '\0')
@@ -1170,9 +1197,13 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
     //determine whether necessary to write data to the remainder of the current block where the offset is at
     if (d->offset % 1024 != 0)
     {
+        printf("Special case: first block incomplete.\n");
         //not at the end of the last written block, so finish block out
         int lastWrittenBlockIndex = get_block_bs_index(fs, record, d->offset / 1024);
+        printf("Last Written BLock Index: %d\n", lastWrittenBlockIndex);
+
         int startIndexWithinBlock = d->offset % 1024;
+        printf("Starting index within block: %d\n", startIndexWithinBlock);
 
         //grab its final block
         uint8_t block[1024] = {0};
@@ -1185,7 +1216,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
 
         //write to that block's end
         int numBytesToWrite = 1024 - startIndexWithinBlock;
-        memcpy(block, ptr, numBytesToWrite);
+        memcpy(block + startIndexWithinBlock, ptr, numBytesToWrite);
 
         ptr += numBytesToWrite; //keep it moving forward
 
@@ -1199,10 +1230,14 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
         //update num bytes left
         nbyte -= numBytesToWrite;
         d->offset += numBytesToWrite;
+
+        printf("Special case handled: nbyte = %d and d->offset = %d.\n", nbyte, d->offset);
     }
 
     //now write blocks one by one to file
-    int fileBlockIndex = d->offset / 1024 + 1;
+    int fileBlockIndex = ceil(d->offset / 1024.0);
+
+    printf("First file block index: %d.\n", fileBlockIndex);
 
     while (nbyte > 0)
     {
@@ -1213,11 +1248,19 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
             //couldn't allocate any more
             printf("Failed to allocate another block.\n");
             printf("Bytes written: %d\n", totalNumberOfBytesOriginally);
-            return totalNumberOfBytesOriginally - nbyte;
+
+            int bytesWritten = totalNumberOfBytesOriginally - nbyte;
+            /* record->metadata.fileSize = ceil((float)d->offset / 1024);
+            d->offset += bytesWritten; */
+            return bytesWritten;
         }
 
         if (nbyte >= 1024)
         {
+            printf("More than 1024 bytes.\n");
+            printf("nextID: %d\n", nextID);
+            printf("nbytes to write this time: %d.\n", nbyte);
+
             //write an entire block
             if (! back_store_write(fs->bs, nextID, ptr))
             {
@@ -1226,12 +1269,14 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
             }
 
             ptr += 1024;
+            d->offset += 1024;
             nbyte -= 1024;
         }
         else
         {
             //write what's left
             uint8_t block[1024] = {0};
+            printf("nbytes to write this time: %d.\n", nbyte);
             memcpy(block, ptr, nbyte);
 
             if (! back_store_write(fs->bs, nextID, ptr))
@@ -1240,11 +1285,17 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
                 return -1;
             }
 
+            d->offset += nbyte;
             nbyte = 0;
         }
     }
 
-    return totalNumberOfBytesOriginally;
+    int bytesWritten = totalNumberOfBytesOriginally;
+    record->metadata.fileSize = ceil((float)d->offset / 1024) * 1024; //get the number of blocks and multiply by 1024 bytes
+    printf("New filesize: %d.\n", record->metadata.fileSize);
+    printf("New offset: %d.\n", d->offset);
+
+    return bytesWritten;
 
     /*
     int totalNumberOfBytesOriginally = nbyte;
