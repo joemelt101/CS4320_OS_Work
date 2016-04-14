@@ -281,8 +281,6 @@ static int get_block_bs_index(S16FS_t *fs, file_record_t *fileRecord, uint32_t f
     }
     else if (fileBlockIndex <= 262661) // should be [518->262,661]
     {
-        printf("DID Zone!!!\n");
-
         if (fileRecord->block_refs[7] == 0)
         {
             //need to allocate DID block
@@ -1150,6 +1148,7 @@ static void deallocate_bs_index_array(back_store_t *bs, int *arr, int size)
 /// \param nbyte The number of bytes to write
 /// \return number of bytes written (< nbyte IFF out of space), < 0 on error
 ///
+
 ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
 {
     //write to end of current block
@@ -1250,8 +1249,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
             printf("Bytes written: %d\n", totalNumberOfBytesOriginally);
 
             int bytesWritten = totalNumberOfBytesOriginally - nbyte;
-            /* record->metadata.fileSize = ceil((float)d->offset / 1024);
-            d->offset += bytesWritten; */
+            record->metadata.fileSize = ceil((float)d->offset / 1024) * 1024; //get the number of blocks and multiply by 1024 bytes
             return bytesWritten;
         }
 
@@ -1691,6 +1689,8 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
 ///
 int fs_remove(S16FS_t *fs, const char *path)
 {
+    printf("*** fs_remove called...");
+
     /////////////////////
     //Validate Parameters
 
@@ -1700,19 +1700,38 @@ int fs_remove(S16FS_t *fs, const char *path)
         return -1;
     }
 
+    printf("Removing: %s\n", path);
+
     /////////////////////////////////////////
     //Delete Specified File From File Records
 
     //find the file
-    uint8_t fileIndex = fs_traverse(fs, path);
+    int fileIndex = fs_traverse(fs, path);
+
+    if (fileIndex == 0)
+    {
+        //can't do that!
+        printf("Cannot delete the root directory!\n");
+        return -1;
+    }
+
+    if (fileIndex == -1)
+    {
+        printf("Couldn't find file: %s.\n", path);
+        return -1;
+    }
+
+    printf("Index of file: %d.\n", fileIndex);
 
     //if directory and the directory is not empty, then report an error
     file_record_t *fr = &fs->file_records[fileIndex];
 
     if (fr->type == FS_DIRECTORY)
     {
+        printf("Trying to delete directory... Need to determine if empty.\n");
+
         //pull block
-        directory_t *block;
+        directory_t block;
 
         if (! back_store_read(fs->bs, fr->block_refs[0], &block))
         {
@@ -1724,22 +1743,28 @@ int fs_remove(S16FS_t *fs, const char *path)
         //look to see if directory is empty
         for (int i = 0; i < 15; ++i)
         {
-            if (block->entries[i].file_record_index != 0)
+            if (block.entries[i].file_record_index != 0)
             {
                 //found a non empty directory!
                 printf("Error: Cannot delete a non-empty directory.\n");
                 return -3;
             }
         }
+
+        printf("Directory is empty.\n");
     }
 
     //made it this far, so the directory must be empty
 
     //free all blocks in the file, increment by 1024 to grab one new block per iteration
-    for (uint32_t j = 0; j < fr->metadata.fileSize; j += 1024)
+    int numBlocksInFile = ceil(fr->metadata.fileSize / 1024.0);
+
+    for (int j = 0; j < numBlocksInFile; j += 1)
     {
         //get the block index associated with the file offset j
         int bsIndex = get_block_bs_index(fs, fr, j);
+
+        //printf("Releasing at BS Index: %d.\n", bsIndex);
 
         if (bsIndex < 0)
         {
@@ -1766,6 +1791,7 @@ int fs_remove(S16FS_t *fs, const char *path)
         if (fs->file_descriptors[j].file_record_index == fileIndex)
         {
             //found an open file descriptor
+            printf("Closing open file index at: %d.\n", j);
             fs_close(fs, j); //<< Close the file descriptor
         }
     }
@@ -1788,8 +1814,10 @@ int fs_remove(S16FS_t *fs, const char *path)
             c--;
         *c = '\0';
         parentDirPath = strdup(pathDup);
+        printf("Retrieving parent directory at %s.\n", parentDirPath);
         free(pathDup);
         parentDirectoryIndex = fs_traverse(fs, parentDirPath);
+        printf("Results of search: %d.\n", parentDirectoryIndex);
         free(parentDirPath);
     }
 
