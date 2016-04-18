@@ -409,6 +409,9 @@ static file_record_t* allocate_file_record(S16FS_t* fs, char* filename, file_t f
             //set the type
             f->type = filetype;
 
+            //clear this out
+            f->metadata.fileSize = 0;
+
             //clear out block_refs
             for (int j = 0; j < 8; ++j)
             {
@@ -437,6 +440,8 @@ static file_record_t* allocate_file_record(S16FS_t* fs, char* filename, file_t f
                     printf("Failed to write to the backing store in allocate_file_record!\n");
                     return NULL;
                 }
+
+                f->metadata.fileSize = 1024; //set this for deletion purposes
             }
 
             //return the newly allocated location
