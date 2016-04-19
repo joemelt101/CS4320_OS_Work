@@ -411,6 +411,7 @@ static file_record_t* allocate_file_record(S16FS_t* fs, char* filename, file_t f
 
             //clear this out
             f->metadata.fileSize = 0;
+            f->metadata.virtualFileSize = 0;
 
             //clear out block_refs
             for (int j = 0; j < 8; ++j)
@@ -442,6 +443,7 @@ static file_record_t* allocate_file_record(S16FS_t* fs, char* filename, file_t f
                 }
 
                 f->metadata.fileSize = 1024; //set this for deletion purposes
+                f->metadata.virtualFileSize = 1024;
             }
 
             //return the newly allocated location
@@ -1174,7 +1176,7 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
         return -1;
     }
 
-    //printf("fs_write called with fs: %p, fd: %d, src: %p, nbyte: %d.\n", fs, fd, src, nbyte);
+    printf("fs_write called with fs: %p, fd: %d, src: %p, nbyte: %d.\n", fs, fd, src, nbyte);
 
     ////////////////////////////
     //Write To End of File First
@@ -1254,7 +1256,8 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
             //printf("Bytes written: %d\n", totalNumberOfBytesOriginally);
 
             int bytesWritten = totalNumberOfBytesOriginally - nbyte;
-            record->metadata.fileSize = ceil((float)d->offset / 1024) * 1024; //get the number of blocks and multiply by 1024 bytes
+            record->metadata.fileSize = ceil((float)d->offset / 1024.0) * 1024; //get the number of blocks and multiply by 1024 bytes
+            record->metadata.virtualFileSize = record->metadata.fileSize; //ending at the end of a block, so just set to the same thing
             return bytesWritten;
         }
 
@@ -1294,9 +1297,20 @@ ssize_t fs_write(S16FS_t *fs, int fd, const void *src, size_t nbyte)
     }
 
     int bytesWritten = totalNumberOfBytesOriginally;
-    record->metadata.fileSize = ceil((float)d->offset / 1024) * 1024; //get the number of blocks and multiply by 1024 bytes
-    //printf("New filesize: %d.\n", record->metadata.fileSize);
-    //printf("New offset: %d.\n", d->offset);
+
+    //Adjust actual file size
+    uint32_t newFileSize = ceil((float)d->offset / 1024.0) * 1024;
+    if (newFileSize > record->metadata.fileSize)
+    {
+            record->metadata.fileSize = newFileSize;
+    }
+
+    //Adjust virtual file size
+    record->metadata.virtualFileSize = (newFileSize - 1024) + (d->offset % 1024);
+
+    printf("New filesize: %d.\n", record->metadata.fileSize);
+    printf("New offset: %d.\n", d->offset);
+    printf("New virtual size: %d.\n", record->metadata.virtualFileSize);
 
     return bytesWritten;
 
@@ -1896,18 +1910,47 @@ int fs_remove(S16FS_t *fs, const char *path)
 ///
 off_t fs_seek(S16FS_t *fs, int fd, off_t offset, seek_t whence)
 {
-    if (! fs || fd < 0 || fd > _MAX_NUM_OPEN_FILES)
+    if (! fs || fd < 0 || fd >= _MAX_NUM_OPEN_FILES)
     {
+        printf("Invalid fs or fd.\n");
         return -1;
     }
 
     //TODO: Check offset and whence
-    if (offset || whence)
+    if (offset == 0 || (whence != FS_SEEK_CUR && whence != FS_SEEK_END && whence != FS_SEEK_SET))
     {
-        return -1;
+        printf("Invalid offset or seek.\n");
+        return -2;
     }
 
-    return -1;
+    FileDes_t *d = fs->file_descriptors[fd];
+    file_record_t *rec = fs->file_records[d->file_record_index];
+
+    if (whence == FS_SEEK_CUR)
+    {
+        d->offset += offset;
+    }
+    else if (whence == FS_SEEK_END)
+    {
+        d->offset = rec->metadata.virtualFileSize + offset;
+    }
+    else
+    {
+        //adjust based on beginning of file
+        d->offset = offset;
+    }
+
+    //catch out of bounds
+    if (d->offset < 0)
+    {
+        d->offset = 0;
+    }
+    else if (d->offset > rec->metadata.virtualFileSize)
+    {
+        d->offset = rec->metadata.virtualFileSize;
+    }
+
+    return d->offset;
 }
 
 ///
@@ -1922,12 +1965,122 @@ off_t fs_seek(S16FS_t *fs, int fd, off_t offset, seek_t whence)
 ///
 ssize_t fs_read(S16FS_t *fs, int fd, void *dst, size_t nbyte)
 {
-    if (! fs || fd < 0 || fd > _MAX_NUM_OPEN_FILES || ! dst || nbyte == 0)
+    /////////////////////
+    //Validate parameters
+
+    if (! fs || fd < 0 || fd >= _MAX_NUM_OPEN_FILES || ! dst)
     {
+        printf("Invalid parameters detected.\n");
         return -1;
     }
 
-    return -1;
+    if (nbyte == 0)
+    {
+        printf("Returning 0 bytes...");
+        return 0;
+    }
+
+    ////////////////////////////
+    //Read to end of first block
+
+    //track nbytes started with to calculated final offset
+    int startingNByte = nbyte;
+
+    //get the file
+    FileDes_t *d = &fs->file_descriptors[fd];
+    file_record_t *rec = &fs->file_records[d->file_record_index];
+
+    //calculate the offset block index and offset inside of block
+    int blockIndex = d->offset / 1024;
+    int offset = d->offset % 1024;
+    int numBytesToReadInBlock = 1024 - offset;
+    //int numBytesToReadInBlock = rec->metadata.virtualFileSize - (blockIndex * 1024 + offset) + 1;
+
+    //check to make sure that you don't go "overboard"
+    if (blockIndex * 1024 + numBytesToReadInBlock > rec->metadata.virtualFileSize)
+    {
+        numBytesToReadInBlock = rec->metadata.virtualFileSize - 1024 * blockIndex;
+    }
+
+    //further restrain to only the number of bytes requested
+    if (numBytesToReadInBlock > nbyte)
+    {
+        numBytesToReadInBlock = nbyte;
+    }
+
+    //retrieve and read until end of block
+    int bsBlockIndex = get_block_bs_index(fs, rec, blockIndex);
+
+    if (blockIndex == -1)
+    {
+        printf("Failed to get the block index.\n");
+        return -2;
+    }
+
+    uint8_t block[1024];
+
+    if (! back_store_read(fs->bs, bsBlockIndex, &block))
+    {
+        printf("Failed to get the block data at index: %d.\n", bsBlockIndex);
+        return -3;
+    }
+
+    uint8_t *ptr = (uint8_t *)dst;
+
+    memcpy(dst, ptr, numBytesToReadInBlock);
+
+    ptr += numBytesToReadInBlock;
+    nbyte -= numBytesToReadInBlock;
+
+    if (nbyte == 0)
+    {
+        d->offset += numBytesToReadInBlock; //keep track of this
+        return numBytesToReadInBlock;
+    }
+
+    /////////////////////////////////////////////////////////////////////
+    //Read rest of bytes of all following blocks until EOF or nbytes == 0
+
+    int bytesLeftUntilEOF = rec->metadata.virtualFileSize - d->offset;
+
+    if (nbyte > bytesLeftUntilEOF)
+    {
+        nbyte = bytesLeftUntilEOF;
+    }
+
+    while (nbyte > 0 && d->offset < rec->metadata.virtualFileSize)
+    {
+        blockIndex++; //go to next file block index
+
+        bsBlockIndex = get_block_bs_index(fs, rec, blockIndex);
+
+        if (! back_store_read(fs->bs, bsBlockIndex, &block))
+        {
+            printf("Failed to get the block data at index: %d.\n", bsBlockIndex);
+            return -4;
+        }
+
+        if (nbyte >= 1024)
+        {
+            memcpy(dst, block, 1024);
+            nbyte -= 1024;
+            ptr += 1024;
+            d->offset += nbyte;
+        }
+        else
+        {
+            //nbyte < 1024
+            memcpy(dst, block, nbyte);
+            ptr += nbyte;
+            d->offset += nbyte;
+            nbyte = 0;
+        }
+    }
+
+    /////////////////////////////
+    //Return number of bytes read
+
+    return startingNByte;
 }
 
 ///
@@ -1944,12 +2097,129 @@ dyn_array_t *fs_get_dir(S16FS_t *fs, const char *path)
         return NULL;
     }
 
-    return NULL;
+    //open directory
+    int dirIndex = fs_traverse(fs, path);
+
+    if (dirIndex == -1)
+    {
+        printf("Directory doesn't exist!\n");
+        return NULL;
+    }
+
+    directory_t dir;
+
+    if (! back_store_read(fs->bs, dirIndex, &dir);)
+    {
+        printf("Failed to read from back_store.\n");
+        return NULL;
+    }
+
+    //create dyn_array
+    dyn_array_t *da = dyn_array_create(0, sizeof(file_record_t), NULL);
+
+    //for each in direct
+    for (int i = 0; i < 15; ++i)
+    {
+        directory_entry_t entry = dir.entries[i];
+
+        if (entry.file_name[0] != '\0')
+        {
+            //found a live one! Make sure to grab it....
+            if (! dyn_array_push_back(da, &fs->file_records[entry.file_record_index]))
+            {
+                printf("Failed to push directory object to back of dyn_array.\n");
+                dyn_array_destroy(da);
+                return NULL;
+            }
+        }
+    }
+
+    //successful in creating dyn_array object
+    return da;
 }
 
 /////////////////////////
 // Extra Credit!!! :D ///
 /////////////////////////
+
+/*
+    Gets the parent directory of a given path.
+
+    Returns NULL if failed or the parent dir on success
+*/
+static char *get_parent_dir(const char *path)
+{
+    if (! path)
+    {
+        return NULL;
+    }
+
+    if (path == '/')
+    {
+        return NULL;
+    }
+
+    char *p = strdup(path);
+
+    char *c = *p;
+
+    while (*c != '\0')
+    {
+        c++;
+    }
+
+    while (*c != '/')
+    {
+        c--;
+    }
+
+    *c = '\0';
+
+    char *parentDir = strdup(p);
+
+    free(p);
+
+    return parentDir;
+}
+
+/*
+    Gets the filename for a given path and returns it
+    Returns NULL on failure
+*/
+static char *get_filename(char *path)
+{
+    if (! path)
+    {
+        return NULL;
+    }
+
+    if (path == '/')
+    {
+        return NULL;
+    }
+
+    char *p = strdup(path);
+
+    char *c = *p;
+
+    while (*c != '\0')
+    {
+        c++;
+    }
+
+    while (*c != '/')
+    {
+        c--;
+    }
+
+    *c = '\0';
+
+    char *filename = strdup(c + 1);
+
+    free(p);
+
+    return filename;
+}
 
 ///
 /// !!! Graduate Level/Undergrad Bonus !!!
@@ -1964,10 +2234,155 @@ dyn_array_t *fs_get_dir(S16FS_t *fs, const char *path)
 ///
 int fs_move(S16FS_t *fs, const char *src, const char *dst)
 {
+    /////////////////////
+    //Validate Parameters
+
+    //ensure that the parameters are not NULL
     if (! fs || ! src || ! dst)
     {
+        printf("Invalid parameters.\n");
         return -1;
     }
 
-    return -1;
+    //ensure that you're not trying to move a directory within itself
+
+    if (strstr(dst, src) != NULL)
+    {
+        printf("Can't move a directory to within itself.\n");
+        return -2;
+    }
+
+    //TODO: Validate that the parent directory has a spot open for additions
+
+    ////////////////////
+    //Move the directory
+
+    //grab this for the destination directory addition later on
+    int srcFileIndex = fs_traverse(fs, src);
+
+    if (srcFileIndex == -1)
+    {
+        printf("Couldn't open the srcFileIndex.\n");
+        return -9;
+    }
+
+    //remove from src
+    char *srcParentDir = get_parent_dir(src);
+
+    int srcParentDirFileIndex = fs_traverse(fs, srcParentDir);
+    free(srcParentDir); //don't need this anymore
+
+    if (srcParentDirFileIndex == -1)
+    {
+        printf("Failed to get parent directory.\n");
+        return -3;
+    }
+
+    //search through src directory for file
+    directory_t dir;
+    file_record_t *parentDirRecord = &fs->file_records[srcParentDirFileIndex];
+
+    if (! back_store_read(fs->bs, parentDirRecord->block_refs[0], &dir))
+    {
+        printf("Failed to get the parent directory data.\n");
+        return -4;
+    }
+
+    //get the filename to search for
+    char *srcFileName = get_filename(src);
+
+    //search through all of the directory's listings
+    int i = 0;
+    for ( ; i < 15; ++i)
+    {
+        directory_entry_t *entry = &dir.entries[i];
+
+        //if this is the file we're looking for, then we need to remove it from the directory
+        //It will be added later on in fs_move to the other directory
+        if (strcmp(entry.file_name, srcFileName) == 0)
+        {
+            //found the file
+            //remove the file from this location
+            entry->file_name = '\0';
+            entry->file_record_index = 0;
+            free(srcFileName); //this is no longer needed...
+
+            //write updated directory data back to the BS
+            if (! back_store_write(fs->bs, parentDirRecord->block_refs[0]))
+            {
+                printf("Failed to write back to parent directory location.\n");
+                return -5;
+            }
+
+            break;
+        }
+    }
+
+    if (i == 15)
+    {
+        printf("Couldn't find the file specified.\n");
+        return -6;
+    }
+
+    //ok, so by this point everything should be removed from the src parent directory.
+    //All we need to do now is add it to the other directory by its new name
+
+    //add to dst with new filename
+    char *dstParentDir = get_parent_dir(dst);
+
+    int dstParentDirFileIndex = fs_traverse(fs, dstParentDir);
+    free(dstParentDir); //don't need this anymore
+
+    if (dstParentDirFileIndex == -1)
+    {
+        printf("Failed to get parent directory for the dst.\n");
+        return -7;
+    }
+
+    //search through src directory for file
+    //use the previously defined dir
+    file_record_t *dstParentDirRecord = &fs->file_records[srcParentDirFileIndex];
+
+    if (! back_store_read(fs->bs, dstParentDirRecord->block_refs[0], &dir))
+    {
+        printf("Failed to get the parent directory data.\n");
+        return -8;
+    }
+
+    //get the filename to search for
+    char *dstFileName = get_filename(dst);
+
+    //search through all of the directory's listings
+    i = 0;
+    for ( ; i < 15; ++i)
+    {
+        directory_entry_t *entry = &dir.entries[i];
+
+        //If this is an empty location then we need to add the file here so it shows up in the directory.
+        if (entry.file_name[0] == '\0')
+        {
+            //found an open location
+            //add the file to this location
+            strcpy(entry->file_name, dstFileName);
+            entry->file_record_index = srcFileIndex;
+            free(dstFileName); //this is no longer needed...
+
+            //write updated directory data back to the BS
+            if (! back_store_write(fs->bs, parentDirRecord->block_refs[0]))
+            {
+                printf("Failed to write back to parent directory location.\n");
+                return -9;
+            }
+
+            break;
+        }
+    }
+
+    //i==15 case (dst directory is full) is handled at the beginning of the function
+    //Should check this before deleting the file from it's original directory (that's why it's up there)
+
+    //////////////////
+    //Return "Success"
+
+    return 0;
 }
