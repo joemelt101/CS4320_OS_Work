@@ -484,12 +484,6 @@ ssize_t fs_read(S16FS_t *fs, int fd, void *dst, size_t nbyte)
     }
     filesize = inode.mdata.size;
 
-    //TODO: Delete
-    if (offset == 66934284)
-    {
-        printf("Here!\n");
-    }
-
     //figure out max number readable
     int maxReadableFromOffset = filesize - offset;
 
@@ -686,19 +680,24 @@ dyn_array_t *fs_get_dir(S16FS_t *fs, const char *path)
             }
 
             //copy name over
-            //TODO Fix
-            /*
-            char *withSlash = strcat(path, "/");
-            char *fullName = strcat(path, inode.fname);
-            free(withSlash); */
             strcpy(toAdd.name, dirListing.entries[i].fname);
 
             //copy type over
             //get the actual file first from the find
             result_t searchResult;
 
-            //TODO: plugin path + filename
-            locate_file(fs, path, &searchResult);
+            char *pathWithEverything = (char *)malloc(strlen(path) + strlen(toAdd.name) + 2); //add 2 for a null terminator and a slash character
+            strcpy(pathWithEverything, path);
+
+            if (strcmp(pathWithEverything, "/") != 0)
+            {
+                //not at the root so add another '/'
+                strcat(pathWithEverything, "/");
+            }
+
+            strcat(pathWithEverything, toAdd.name);
+            locate_file(fs, pathWithEverything, &searchResult);
+            free(pathWithEverything);
 
             if (searchResult.found == false || searchResult.success == false)
             {
@@ -865,10 +864,6 @@ int fs_move(S16FS_t *fs, const char *src, const char *dst)
         return -8;
     }
 
-    //TODO: Delete
-    result_t testRes;
-    locate_file(fs, src, &testRes); //should not show up anymore
-
     free(srcFileName);
 
     //update destination directory
@@ -892,9 +887,6 @@ int fs_move(S16FS_t *fs, const char *src, const char *dst)
             break; //we're done here...
         }
     }
-
-    result_t testRes2;
-    locate_file(fs, dst, &testRes2); //should show up...
 
     //return success
     return 0;
