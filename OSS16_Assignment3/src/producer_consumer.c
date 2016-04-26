@@ -5,7 +5,7 @@
 #include <time.h>
 
 #define DATA_SIZE 256
-#define BUFF_SIZE 4098
+#define BUFF_SIZE 4096
 
 
 int main(void) {
@@ -33,14 +33,85 @@ int main(void) {
     /*
     * MESSAGE QUEUE SECTION
     **/
+	int id = fork();
+
+	if (id != 0)
+	{
+        //parent
+
+        //wait for child to receive everything
+        printf("Parent: Awaiting Pipe Section Child Complete.\n");
+        waitpid(id, NULL, 0);
+        echo ("Parent: Message Queue Exit.\n");
+	}
+	else
+	{
+        //child
+
+        //wait for parent to receive everything
+
+        //return to parent
+        printf("Child: Message Queue Finished.\n");
+        _exit(0);
+	}
 
     /*
     * PIPE SECTION
     **/
+	id = fork();
+
+    if (id != 0)
+    {
+        //parent
+
+        //prep communication
+
+        //send information
+
+        //wait for child to receive everything
+        printf("Parent: Awaiting Pipe Section Child Complete.\n");
+        waitpid(id, NULL, 0);
+        printf("Parent: Pipe Section Exit.\n");
+    }
+    else
+    {
+        //child
+
+        //receive information
+
+        //end when everything transferred
+        printf("Child: Pipe Section Completed.\n");
+        _exit(0);
+    }
 
     /*
     * SHARED MEMORY AND SEMAPHORE SECTION
     **/
+	id = fork();
+
+	if (id != 0)
+	{
+        //parent
+
+        //setup communications
+
+        //send information
+
+        //wait for child
+        printf("Parent: Waiting for Shared Memory child.\n");
+        waitpid(id, NULL, 0);
+        printf("Parent: Reaped Shared Memory Child.\n");
+	}
+	else
+	{
+        //child
+
+        //receive information
+
+        //end
+        printf("Child: Shared Memory Completed.\n");
+        _exit(0);
+	}
 
     return 0;
 }
