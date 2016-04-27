@@ -43,7 +43,7 @@ int main(void) {
 
 //    // System V IPC keys for you to use
     const key_t s_msq_key = 1337;  // used to create message queue ipc
-    const key_t s_shm_key = 1338;  // used to create shared memory ipc
+    //const key_t s_shm_key = 1338;  // used to create shared memory ipc
     //const key_t s_sem_key = 1339;  // used to create semaphore ipc
 //    // POSIX IPC keys for you to use
 //    const char *const p_msq_key = "OS_MSG";
@@ -287,7 +287,7 @@ int main(void) {
         int sharedMemoryID;
 
         //instantiate shared memory
-        if ((sharedMemoryID = shmget(s_shm_key, sizeof(data_shared_t), (S_IRUSR | S_IWUSR))) == -1)
+        if ((sharedMemoryID = shmget(IPC_PRIVATE, sizeof(data_shared_t), (S_IRUSR | S_IWUSR))) == -1)
         {
             perror("Failed to create shared memory segment");
             return 1;
