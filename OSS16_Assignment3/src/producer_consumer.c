@@ -27,6 +27,21 @@ typedef struct mq_data {
     char data[256];
 } mq_data_t;
 
+//Frees a shared memory segment
+//Fail: Returns -1
+//Success: Returns 0
+int free_sm(int shmid)
+{
+    int res = shmctl(shmid, IPC_RMID, NULL);
+
+    if (res == -1)
+    {
+        printf("Failed to free shared memory.\n");
+        return -1;
+    }
+
+    return 0;
+}
 
 int main(void) {
     // seed the random number generator
@@ -367,8 +382,17 @@ int main(void) {
             printf("Parent: Reaped Shared Memory Child.\n");
 
             //free up the shared memory
+
+            //unlink
             if (shmdt((void *)data) == -1) {  /* shared memory detach */
                 perror("Failed to destroy shared memory segment");
+                return 1;
+            }
+
+            //free
+            if (free_sm(sharedMemoryID) == -1)
+            {
+                printf("Failed to free shared memory.\n");
                 return 1;
             }
         }
