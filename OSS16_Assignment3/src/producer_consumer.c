@@ -43,6 +43,11 @@ int free_sm(int shmid)
     return 0;
 }
 
+int free_mq(int msqid)
+{
+    return msgctl(msqid, IPC_RMID, NULL);
+}
+
 int main(void) {
     // seed the random number generator
     srand(time(NULL));
@@ -79,14 +84,24 @@ int main(void) {
         //first setup the messages q
         int msqid = msgget(s_msq_key, 0666 | IPC_CREAT);
 
+        if (msqid == -1)
+        {
+            perror("Failed to create message q: ");
+            return -2;
+        }
+
         //now split up the process and have them execute different code
         id = fork();
 
         if (id == -1)
         {
-            printf("Failed to fork process!\n");
+            perror("Failed to fork process: ");
+            if (free_mq(msqid) == -1)
+            {
+                perror("Failed to free memory Q.\n");
+            }
             //close mq
-            return -1;
+            return -3;
         }
 
         if (id != 0)
@@ -106,18 +121,50 @@ int main(void) {
                 memcpy(package.data, ptr, DATA_SIZE);
 
                 //send the data
-                msgsnd(msqid, &package, sizeof(mq_data_t), 0);
+                if (msgsnd(msqid, &package, sizeof(mq_data_t), 0) == -1)
+                {
+                    perror("Failed to send message to MQ: ");
+                    if (free_mq(msqid) == -1)
+                    {
+                        perror("Failed to free memory Q.\n");
+                    }
+                    return -4;
+                }
             }
 
             //let the child know we're done sending information
             printf("Sending kill code.\n");
             package.mtype = 2;
-            msgsnd(msqid, &package, sizeof(mq_data_t), 0);
+
+            if (msgsnd(msqid, &package, sizeof(mq_data_t), 0) == -1)
+            {
+                perror("Failed to send final message to MQ: ");
+                if (free_mq(msqid) == -1)
+                {
+                    perror("Failed to free memory Q.\n");
+                }
+                return -5;
+            }
 
             //wait for child to receive everything
-            printf("Parent: Awaiting Pipe Section Child Complete.\n");
-            waitpid(id, NULL, 0);
-            msgctl(msqid, IPC_RMID, NULL); //clean this up
+            printf("Parent: Awaiting Message Queue Section Child Complete.\n");
+
+            if (waitpid(id, NULL, 0) == -1)
+            {
+                perror("Failed to reap the child: ");
+                if (free_mq(msqid) == -1)
+                {
+                    perror("Failed to free memory Q.\n");
+                }
+                return -6;
+            }
+
+            if (free_mq(msqid) == -1)
+            {
+                perror("Failed to free message Q: ");
+                return -7;
+            }
+
             printf("Parent: Message Queue Exit.\n");
         }
         else
@@ -147,6 +194,16 @@ int main(void) {
 
                     memcpy(ptr, data.data, DATA_SIZE);
                     ptr += DATA_SIZE;
+                }
+                else
+                {
+                    //problem
+                    perror("Failed to receive a message: ");
+                    if (free_mq(msqid) == -1)
+                    {
+                        perror("Failed to free memory Q.\n");
+                    }
+                    return -10;
                 }
 
             }
@@ -203,6 +260,12 @@ int main(void) {
         if (id == -1)
         {
             printf("Failed to fork process!\n");
+            //close pipe
+            if ((close(ends[0]) == -1) || (close(ends[1]) == -1))
+            {
+                perror("Failed to close pipe: ");
+            }
+
             return -2;
         }
 
@@ -211,16 +274,35 @@ int main(void) {
             //parent
 
             //prep communication
-            close(ends[0]); //don't need to read
+            if (close(ends[0]) == -1)
+            {
+                perror("Failed to close the zero end: ");
+                return -3;
+            }
+
+             //don't need to read
             char *ptr = producer_buffer;
 
             //send information
             for (int j = 0; j < NUM_SENDS; ++j, ptr += DATA_SIZE)
             {
-                write(ends[1], ptr, DATA_SIZE);
+                if (write(ends[1], ptr, DATA_SIZE) == -1)
+                {
+                    perror("Failed to write: ");
+                    //close pipe
+                    if ((close(ends[0]) == -1) || (close(ends[1]) == -1))
+                    {
+                        perror("Failed to close pipe: ");
+                    }
+                    return -3;
+                }
             }
 
-            close(ends[1]);
+            if (close(ends[1]) == -1)
+            {
+                perror("Failed to close writing end: ");
+                return -4;
+            }
 
             //wait for child to receive everything
             printf("Parent: Awaiting Pipe Section Child Complete.\n");
@@ -235,20 +317,37 @@ int main(void) {
             char *ptr = ground_truth;
 
             //don't need to write
-            close(ends[1]);
+
+            if (close(ends[1]) == -1)
+            {
+                perror("Failed to close writing end: ");
+                return -14;
+            }
 
             for ( ; ; ptr += DATA_SIZE)
             {
-                if (read(ends[0], ptr, DATA_SIZE) == 0)
+                int res = read(ends[0], ptr, DATA_SIZE);
+
+                if (res == 0)
                 {
                     //the pipe has been closed
                     //basically no more information will be sent over
                     break;
                 }
+                else if (res == -1)
+                {
+                    perror("Failed to read from pipe: ");
+                    return -15;
+                }
             }
 
             //close other end of pipe
-            close(ends[0]);
+
+            if (close(ends[0]) == -1)
+            {
+                perror("Failed to close writing end: ");
+                return -20;
+            }
 
             //validate success
             if (memcmp(ground_truth, producer_buffer, BUFF_SIZE) == 0)
@@ -311,15 +410,33 @@ int main(void) {
         //map the memory to local memory variable for easy access
         if ((data = (data_shared_t *)shmat(sharedMemoryID, NULL, 0)) == (void *) -1)
         {
-            //TODO: Cleanup
             perror("Failed to attach memory segment");
+
+            //free shared memory
+            if (free_sm(sharedMemoryID) == -1)
+            {
+                perror("Failed to free shared memory: ");
+            }
+
             return 1;
         }
 
         if (sem_init(&data->semLock, 1/*shared across processes*/, 1) == -1)
         {
-            //TODO: Cleanup
             perror("Failed to initialize semaphore.\n");
+
+            //unlink
+            if (shmdt((void *)data) == -1) {  /* shared memory detach */
+                perror("Failed to destroy shared memory segment");
+                return 1;
+            }
+
+            //free shared memory
+            if (free_sm(sharedMemoryID) == -1)
+            {
+                perror("Failed to free shared memory: ");
+            }
+
             return 1;
         }
 
@@ -329,7 +446,19 @@ int main(void) {
         if (id == -1)
         {
             printf("Failed to fork process!\n");
-            //TODO; cleanup everything
+
+            //unlink
+            if (shmdt((void *)data) == -1) {  /* shared memory detach */
+                perror("Failed to destroy shared memory segment");
+                return 1;
+            }
+
+            //free shared memory
+            if (free_sm(sharedMemoryID) == -1)
+            {
+                perror("Failed to free shared memory: ");
+            }
+
             return -3;
         }
 
@@ -354,6 +483,19 @@ int main(void) {
                     if(errno != EINTR)
                     {
                         fprintf(stderr, "Thread failed to lock semaphore\n");
+
+                        //unlink
+                        if (shmdt((void *)data) == -1) {  /* shared memory detach */
+                            perror("Failed to destroy shared memory segment");
+                            return 1;
+                        }
+
+                        //free shared memory
+                        if (free_sm(sharedMemoryID) == -1)
+                        {
+                            perror("Failed to free shared memory: ");
+                        }
+
                         return 1;
                     }
                 }
@@ -373,12 +515,41 @@ int main(void) {
                 if (sem_post(&data->semLock) == -1)
                 {
                     fprintf(stderr, "Thread failed to unlock semaphore\n");
+
+                    //unlink
+                    if (shmdt((void *)data) == -1) {  /* shared memory detach */
+                        perror("Failed to destroy shared memory segment");
+                        return 1;
+                    }
+
+                    //free shared memory
+                    if (free_sm(sharedMemoryID) == -1)
+                    {
+                        perror("Failed to free shared memory: ");
+                    }
+
+                    return 1;
                 }
             }
 
             //wait for child
             printf("Parent: Waiting for Shared Memory child.\n");
-            waitpid(id, NULL, 0);
+            if (waitpid(id, NULL, 0) == -1)
+            {
+                //unlink
+                if (shmdt((void *)data) == -1) {  /* shared memory detach */
+                    perror("Failed to destroy shared memory segment");
+                }
+
+                //free shared memory
+                if (free_sm(sharedMemoryID) == -1)
+                {
+                    perror("Failed to free shared memory: ");
+                }
+
+                return 1;
+            }
+
             printf("Parent: Reaped Shared Memory Child.\n");
 
             //free up the shared memory
