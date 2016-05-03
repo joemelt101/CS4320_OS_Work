@@ -123,7 +123,7 @@ int main(void) {
                 memcpy(package.data, ptr, DATA_SIZE);
 
                 //send the data
-                if (msgsnd(msqid, &package, sizeof(mq_data_t), 0) == -1)
+                if (msgsnd(msqid, &package, DATA_SIZE, 0) == -1)
                 {
                     perror("Failed to send message to MQ: ");
                     if (free_mq(msqid) == -1)
@@ -138,7 +138,7 @@ int main(void) {
             printf("Sending kill code.\n");
             package.mtype = 2;
 
-            if (msgsnd(msqid, &package, sizeof(mq_data_t), 0) == -1)
+            if (msgsnd(msqid, &package, DATA_SIZE, 0) == -1)
             {
                 perror("Failed to send final message to MQ: ");
                 if (free_mq(msqid) == -1)
